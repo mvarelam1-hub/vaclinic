@@ -1,0 +1,153 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import express from 'express';
+import request from 'supertest';
+
+/**
+ * E10 (ACS, Fase 2) — pruebas unitarias sobre el módulo crítico "Creación de
+ * órdenes" (server/routes/ordenes.ts). Automatiza CP-05, CP-06 y CP-07 del
+ * E3 (partición de equivalencia) y agrega verificación real de ROLLBACK/COMMIT.
+ *
+ * Dobles de prueba usados (justificación): se sustituye `pool` de `../db`
+ * (PostgreSQL real) por un cliente falso en memoria, y `requireStaffAuth` de
+ * `../auth-firebase` (que llamaría a Firebase Admin y a la base de datos) por
+ * un middleware que inyecta directamente el usuario de prueba. Esto aísla la
+ * lógica de negocio del router de dos dependencias externas reales (red y
+ * base de datos), que es exactamente lo que debe hacer una prueba UNITARIA
+ * (a diferencia de una prueba de integración, que sí las ejercitaría).
+ */
+
+let currentStaffUser: any = { idUsuario: 1, roleId: 'recepcionista', status: 'activo', nombreCompleto: 'Recepcionista Demo' };
+
+vi.mock('../auth-firebase', () => ({
+  requireStaffAuth: (req: any, _res: any, next: any) => {
+    req.staffUser = currentStaffUser;
+    next();
+  },
+}));
+
+const queryMock = vi.fn();
+let lastClient: { query: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> } | null = null;
+
+vi.mock('../db', () => ({
+  pool: {
+    connect: vi.fn(async () => {
+      lastClient = { query: vi.fn(), release: vi.fn() };
+      return lastClient;
+    }),
+    query: (...args: any[]) => queryMock(...args),
+  },
+  withAuditContext: vi.fn(),
+}));
+
+// EXAM_PRICES: id_examen -> precio, simulando el catálogo real.
+const EXAM_PRICES: Record<number, number> = { 1: 45.0, 2: 120.5 };
+
+function programClient(client: { query: ReturnType<typeof vi.fn> }) {
+  client.query.mockImplementation(async (sql: string, params: any[] = []) => {
+    if (sql.startsWith('BEGIN') || sql.startsWith('COMMIT') || sql.startsWith('ROLLBACK')) return {};
+    if (sql.includes('INSERT INTO orden')) return { rows: [{ id_orden: 100, numero_orden: params[0] }] };
+    if (sql.includes('SELECT precio FROM examen')) {
+      const idExamen = params[0];
+      return idExamen in EXAM_PRICES ? { rows: [{ precio: EXAM_PRICES[idExamen] }] } : { rows: [] };
+    }
+    if (sql.includes('INSERT INTO detalle_orden')) return { rows: [] };
+    return { rows: [] };
+  });
+}
+
+async function buildApp() {
+  const { ordenesRouter } = await import('./ordenes');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/ordenes', ordenesRouter);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: any, _req: any, res: any, _next: any) => res.status(500).json({ error: err.message }));
+  return app;
+}
+
+beforeEach(() => {
+  vi.resetModules();
+  queryMock.mockReset();
+  currentStaffUser = { idUsuario: 1, roleId: 'recepcionista', status: 'activo', nombreCompleto: 'Recepcionista Demo' };
+});
+
+describe('POST /api/ordenes (partición de equivalencia)', () => {
+  it('crea la orden y su detalle cuando todos los exámenes existen en el catálogo (clase válida)', async () => {
+    const app = await buildApp();
+    // El cliente se crea dentro del handler; programamos su comportamiento
+    // interceptando pool.connect a través de una promesa ya resuelta arriba,
+    // así que reprogramamos el mock justo antes de la petición.
+    const dbModule: any = await import('../db');
+    dbModule.pool.connect.mockImplementation(async () => {
+      lastClient = { query: vi.fn(), release: vi.fn() };
+      programClient(lastClient);
+      return lastClient;
+    });
+
+    const res = await request(app)
+      .post('/api/ordenes')
+      .send({ idPaciente: 1, examenesIds: [1, 2] });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id_orden).toBe(100);
+    const calledSql = lastClient!.query.mock.calls.map((c) => c[0]);
+    expect(calledSql).toContain('COMMIT');
+    expect(calledSql).not.toContain('ROLLBACK');
+  });
+
+  it('rechaza con 400 cuando examenesIds está vacío (clase inválida)', async () => {
+    const app = await buildApp();
+    const res = await request(app).post('/api/ordenes').send({ idPaciente: 1, examenesIds: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('rechaza con 400 cuando falta idPaciente (clase inválida)', async () => {
+    const app = await buildApp();
+    const res = await request(app).post('/api/ordenes').send({ examenesIds: [1] });
+    expect(res.status).toBe(400);
+  });
+
+  it('revierte (ROLLBACK) toda la transacción si un examen no existe en el catálogo (CP-07)', async () => {
+    const app = await buildApp();
+    const dbModule: any = await import('../db');
+    dbModule.pool.connect.mockImplementation(async () => {
+      lastClient = { query: vi.fn(), release: vi.fn() };
+      programClient(lastClient);
+      return lastClient;
+    });
+
+    const res = await request(app)
+      .post('/api/ordenes')
+      .send({ idPaciente: 1, examenesIds: [1, 999999] });
+
+    expect(res.status).toBe(400);
+    const calledSql = lastClient!.query.mock.calls.map((c) => c[0]);
+    expect(calledSql).toContain('ROLLBACK');
+    expect(calledSql).not.toContain('COMMIT');
+  });
+
+  it('rechaza con 403 si el rol autenticado no tiene el permiso admision_crear_ordenes', async () => {
+    currentStaffUser = { idUsuario: 2, roleId: 'tecnico_flebotomista', status: 'activo', nombreCompleto: 'Técnico Demo' };
+    const app = await buildApp();
+    const res = await request(app).post('/api/ordenes').send({ idPaciente: 1, examenesIds: [1] });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/ordenes/pendientes-validacion y /resultados-criticos', () => {
+  it('devuelve las filas de vw_ordenes_pendientes_validacion para un rol autorizado', async () => {
+    currentStaffUser = { idUsuario: 3, roleId: 'bioanalista', status: 'activo', nombreCompleto: 'Bioanalista Demo' };
+    queryMock.mockResolvedValueOnce({ rows: [{ id_orden: 5, numero_orden: 'ORD-0005' }] });
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes/pendientes-validacion');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id_orden: 5, numero_orden: 'ORD-0005' }]);
+  });
+
+  it('rechaza con 403 la consulta de resultados críticos a un rol sin el permiso analizadores_panico', async () => {
+    currentStaffUser = { idUsuario: 4, roleId: 'recepcionista', status: 'activo', nombreCompleto: 'Recepcionista Demo' };
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes/resultados-criticos');
+    expect(res.status).toBe(403);
+  });
+});
