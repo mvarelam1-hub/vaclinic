@@ -23,7 +23,7 @@ jobs:
           cache: npm
 
       - name: Instalar dependencias
-        run: npm ci
+        run: npm install
 
       - name: Pruebas unitarias con cobertura (E10 / E13)
         run: npm run test:coverage
