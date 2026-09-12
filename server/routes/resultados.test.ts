@@ -26,8 +26,10 @@ vi.mock('../auth-firebase', () => ({
 }));
 
 let estadoActual: string = 'Validado';
-const selectQueryMock = vi.fn(async () => ({ rows: [{ estado: estadoActual, valor_capturado: '100' }] }));
-const auditQueryMock = vi.fn(async () => ({ rows: [] }));
+const selectQueryMock = vi.fn(async (..._args: any[]): Promise<any> => ({
+  rows: [{ estado: estadoActual, valor_capturado: '100' }],
+}));
+const auditQueryMock = vi.fn(async (..._args: any[]): Promise<any> => ({ rows: [] }));
 
 vi.mock('../db', () => ({
   pool: { query: (...args: any[]) => selectQueryMock(...args) },
