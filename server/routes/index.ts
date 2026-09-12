@@ -1,0 +1,24 @@
+import { Router } from 'express';
+import { requireStaffAuth } from '../auth-firebase';
+import { portalRouter } from './portal';
+import { pacientesRouter } from './pacientes';
+import { ordenesRouter } from './ordenes';
+import { resultadosRouter } from './resultados';
+import { auditoriaRouter } from './auditoria';
+
+export const apiRouter = Router();
+
+// Portal del paciente: SIN requireStaffAuth (no es personal), usa su propio
+// token de portal (ver portal.ts).
+apiRouter.use('/portal', portalRouter);
+
+// Todo lo demás es personal autenticado con Firebase + permisos por rol.
+apiRouter.get('/auth/whoami', requireStaffAuth, (req, res) => {
+  const { idUsuario, nombreCompleto, roleId, status } = req.staffUser!;
+  res.json({ idUsuario, nombreCompleto, roleId, status });
+});
+
+apiRouter.use('/pacientes', pacientesRouter);
+apiRouter.use('/ordenes', ordenesRouter);
+apiRouter.use('/resultados', resultadosRouter);
+apiRouter.use('/auditoria', auditoriaRouter);
