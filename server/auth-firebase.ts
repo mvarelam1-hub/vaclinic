@@ -35,8 +35,17 @@ let firebaseAdminApp: any = null;
 
 function getFirebaseAdmin() {
   if (firebaseAdminApp) return firebaseAdminApp;
+  // firebase-admin 13+ dejó de exponer el namespace monolítico
+  // `admin.credential` / `admin.initializeApp` en el paquete raíz: hay que
+  // importar los subpaquetes modulares 'firebase-admin/app' y
+  // 'firebase-admin/auth'. Con la versión instalada (14.4.0), `require('firebase-admin')`
+  // ya NO tiene `.credential` (confirmado en producción: los intentos de login
+  // fallaban con "[AUTH] Token inválido o error de verificación: Cannot read
+  // properties of undefined (reading 'cert')" porque admin.credential era
+  // undefined). Este bug bloqueaba TODO inicio de sesión de personal, sin
+  // importar usuario/contraseña ni proyecto de Firebase configurado.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const admin = require('firebase-admin');
+  const { cert, initializeApp } = require('firebase-admin/app');
   const serviceAccountJson = process.env.FIREBASE_ADMIN_CREDENTIALS_JSON;
   if (!serviceAccountJson) {
     throw new Error(
@@ -44,8 +53,8 @@ function getFirebaseAdmin() {
       'Firebase Console > Configuración del proyecto > Cuentas de servicio). No se usan credenciales hardcodeadas.'
     );
   }
-  const credential = admin.credential.cert(JSON.parse(serviceAccountJson));
-  firebaseAdminApp = admin.initializeApp({ credential });
+  const credential = cert(JSON.parse(serviceAccountJson));
+  firebaseAdminApp = initializeApp({ credential });
   return firebaseAdminApp;
 }
 
@@ -71,8 +80,10 @@ export async function requireStaffAuth(req: Request, res: Response, next: NextFu
       if (!token) {
         return res.status(401).json({ error: 'Falta el token de autenticación (Authorization: Bearer <token>).' });
       }
-      const admin = getFirebaseAdmin();
-      const decoded = await admin.auth().verifyIdToken(token);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getAuth } = require('firebase-admin/auth');
+      const app = getFirebaseAdmin();
+      const decoded = await getAuth(app).verifyIdToken(token);
       uid = decoded.uid;
     }
 
