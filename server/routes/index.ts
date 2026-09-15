@@ -14,6 +14,7 @@ import { personalRouter } from './personal';
 import { rolesRouter } from './roles';
 import { reactivosRouter } from './reactivos';
 import { plantillasRouter } from './plantillas';
+import { chatRouter } from './chat';
 
 export const apiRouter = Router();
 
@@ -40,3 +41,4 @@ apiRouter.use('/personal', personalRouter);
 apiRouter.use('/roles', rolesRouter);
 apiRouter.use('/reactivos', reactivosRouter);
 apiRouter.use('/plantillas', plantillasRouter);
+apiRouter.use('/chat', chatRouter);

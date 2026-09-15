@@ -126,6 +126,14 @@ import {
   actualizarPlantillaRemota,
   PlantillasApiError
 } from '../services/plantillasApiService';
+import {
+  enviarMensajeRemoto,
+  marcarCanalLeidoRemoto,
+  toggleReaccionRemota,
+  eliminarMensajeRemoto,
+  limpiarHistorialCanalRemoto,
+  ChatApiError
+} from '../services/chatApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -268,11 +276,11 @@ interface ClinicContextType {
   isChatFloatingOpen: boolean;
   setIsChatFloatingOpen: (open: boolean) => void;
   unreadChatCount: number;
-  sendChatMessage: (msg: Omit<LabChatMessage, 'id' | 'timestamp' | 'readBy'>) => LabChatMessage;
-  markChatMessagesAsRead: (channelOrDirectId: string) => void;
-  addChatReaction: (messageId: string, emoji: string) => void;
-  deleteChatMessage: (messageId: string) => void;
-  clearChatChannelHistory: (channelId: string) => void;
+  sendChatMessage: (msg: Omit<LabChatMessage, 'id' | 'timestamp' | 'readBy'>) => Promise<LabChatMessage>;
+  markChatMessagesAsRead: (channelOrDirectId: string) => Promise<void>;
+  addChatReaction: (messageId: string, emoji: string) => Promise<void>;
+  deleteChatMessage: (messageId: string) => Promise<void>;
+  clearChatChannelHistory: (channelId: string) => Promise<void>;
 
   // Visual Theme & Night Shift Mode (Ergonomía Visual)
   theme: 'light' | 'dark' | 'auto';
@@ -2448,29 +2456,88 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // INTERNAL CHAT & INTERCOM METHODS
   // =========================================================================
 
-  const sendChatMessage = (msgData: Omit<LabChatMessage, 'id' | 'timestamp' | 'readBy'>): LabChatMessage => {
-    const newMsg: LabChatMessage = {
+  /**
+   * Octavo módulo de los 9 migrados desde localStorage (mensaje_chat, ver
+   * server/routes/chat.ts). NOTA: el emisor real que queda registrado en
+   * Postgres es SIEMPRE req.staffUser.idUsuario (la sesión de Firebase
+   * autenticada), nunca msgData.senderId — ese campo solo se usa para el
+   * eco local optimista, que refleja la identidad de "personaje de
+   * demostración" activa (currentStaffUser), la cual puede no coincidir
+   * con la sesión real (ver el comentario de chat.ts sobre este punto).
+   * recipientId/referenceEpisodeId son ids LOCALES; se resuelven a los
+   * remoteId numéricos reales de staffUsers/episodes antes de enviarlos.
+   */
+  const sendChatMessage = async (msgData: Omit<LabChatMessage, 'id' | 'timestamp' | 'readBy'>): Promise<LabChatMessage> => {
+    const draftMsg: LabChatMessage = {
       ...msgData,
       id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       timestamp: new Date().toISOString(),
       readBy: [msgData.senderId]
     };
+
+    let newMsg = draftMsg;
+    if (isEffectiveOnline) {
+      try {
+        const recipientRemoteId = msgData.recipientId
+          ? staffUsers.find(u => u.id === msgData.recipientId)?.remoteId
+          : undefined;
+        const episodeRemoteId = msgData.referenceEpisodeId
+          ? episodes.find(ep => ep.id === msgData.referenceEpisodeId)?.remoteId
+          : undefined;
+        const creado = await enviarMensajeRemoto({
+          channelId: draftMsg.channelId,
+          recipientId: recipientRemoteId,
+          content: draftMsg.content,
+          priority: draftMsg.priority,
+          referenceEpisodeId: episodeRemoteId
+        });
+        newMsg = { ...draftMsg, id: `msg-remote-${creado.id_mensaje}`, remoteId: creado.id_mensaje };
+      } catch (err) {
+        const mensaje = err instanceof ChatApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo enviar el mensaje de chat al servidor:', err);
+        showNotification(`No se pudo enviar el mensaje al servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
+
     setChatMessages(prev => [...prev, newMsg]);
 
     // Play chime sound
-    playNotificationChime(msgData.priority === 'panico' || msgData.priority === 'urgente' ? 'urgent' : 'normal');
+    playNotificationChime(newMsg.priority === 'panico' || newMsg.priority === 'urgente' ? 'urgent' : 'normal');
 
     // Show toast for urgent/panic messages
-    if (msgData.priority === 'panico') {
-      showNotification(`🚨 ALERTA STAT: ${msgData.content.slice(0, 65)}...`, 'error');
-    } else if (msgData.priority === 'urgente') {
-      showNotification(`⚠️ Mensaje urgente de ${msgData.senderName} (${msgData.senderRole})`, 'warning');
+    if (newMsg.priority === 'panico') {
+      showNotification(`🚨 ALERTA STAT: ${newMsg.content.slice(0, 65)}...`, 'error');
+    } else if (newMsg.priority === 'urgente') {
+      showNotification(`⚠️ Mensaje urgente de ${newMsg.senderName} (${newMsg.senderRole})`, 'warning');
     }
 
     return newMsg;
   };
 
-  const markChatMessagesAsRead = (channelOrDirectId: string) => {
+  const markChatMessagesAsRead = async (channelOrDirectId: string): Promise<void> => {
+    if (isEffectiveOnline) {
+      try {
+        // Un mensaje directo real se reparte entre DOS id_canal distintos
+        // según quién lo envió (channelId siempre es "dm_<idDelOtro>" desde
+        // la perspectiva de quien envía — ver sendChatMessage más arriba y
+        // el comentario de chat.ts sobre esta simplificación), así que para
+        // marcar como leída TODA una conversación directa hay que
+        // sincronizar ambas variantes. Un canal de equipo no tiene esa
+        // ambigüedad: su id_canal es único.
+        const esConversacionDirecta = channelOrDirectId.startsWith('dm_') || staffUsers.some(u => u.id === channelOrDirectId);
+        const otroId = channelOrDirectId.startsWith('dm_') ? channelOrDirectId.slice(3) : channelOrDirectId;
+        const canalesARemarcar = esConversacionDirecta
+          ? Array.from(new Set([`dm_${otroId}`, `dm_${currentStaffUser.id}`]))
+          : [channelOrDirectId];
+        await Promise.all(canalesARemarcar.map(canal => marcarCanalLeidoRemoto(canal)));
+      } catch (err) {
+        // Sin advertencia visible a propósito: la versión local tampoco
+        // notificaba esto, es una operación de bajo riesgo, y al volver a
+        // abrir el mismo canal se reintenta sola (no se encola como acción
+        // pendiente porque es idempotente y no necesita replay explícito).
+        console.error('[ClinicContext] No se pudo marcar el canal de chat como leído en el servidor:', err);
+      }
+    }
     setChatMessages(prev =>
       prev.map(m => {
         const isMatch = m.channelId === channelOrDirectId || (m.recipientId && (m.senderId === channelOrDirectId || m.recipientId === channelOrDirectId));
@@ -2485,7 +2552,36 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
   };
 
-  const addChatReaction = (messageId: string, emoji: string) => {
+  /**
+   * Solo intenta sincronizar contra el backend si el mensaje YA tiene
+   * remoteId (igual convención que updateReagent()/updateTemplate() sobre
+   * ítems de fábrica). Si el servidor responde con éxito, se adopta su
+   * arreglo `reacciones` como la verdad real (útil porque ahora es una
+   * fila compartida y otra persona pudo reaccionar casi al mismo tiempo),
+   * traduciendo cada id numérico real de vuelta a un id local de
+   * staffUsers para que el resto del código (que compara contra
+   * currentStaffUser.id) siga funcionando igual que antes.
+   */
+  const addChatReaction = async (messageId: string, emoji: string): Promise<void> => {
+    const target = chatMessages.find(m => m.id === messageId);
+    if (isEffectiveOnline && target?.remoteId) {
+      try {
+        const resultado = await toggleReaccionRemota(target.remoteId, emoji);
+        const reaccionesLocal = resultado.reacciones.map(r => ({
+          emoji: r.emoji,
+          count: r.count,
+          users: r.users.map(uid => staffUsers.find(su => su.remoteId === uid)?.id ?? String(uid))
+        }));
+        setChatMessages(prev => prev.map(m => m.id === messageId ? { ...m, reactions: reaccionesLocal } : m));
+        return;
+      } catch (err) {
+        const mensaje = err instanceof ChatApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo registrar la reacción en el servidor:', err);
+        showNotification(`No se pudo sincronizar la reacción con el servidor (${mensaje}). Se aplicó solo localmente.`, 'warning');
+        // Sigue abajo con el cálculo local de respaldo, igual que los
+        // demás módulos cuando falla la llamada remota estando online.
+      }
+    }
     setChatMessages(prev =>
       prev.map(m => {
         if (m.id !== messageId) return m;
@@ -2514,12 +2610,53 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
   };
 
-  const deleteChatMessage = (messageId: string) => {
+  /**
+   * Restricción real nueva que la versión local no tenía: el backend
+   * (chat.ts) solo permite que el propio emisor borre su mensaje (403 en
+   * cualquier otro caso). Si eso ocurre, el mensaje NO se borra ni
+   * siquiera localmente -a diferencia del resto de fallos remotos-,
+   * porque el mensaje real sigue existiendo para todo el equipo en
+   * Postgres y borrarlo solo de esta pantalla sería mostrar un estado
+   * falso. Esto puede pasar si el "personaje de demostración" activo
+   * (currentStaffUser, con el que la UI decide mostrar el botón de
+   * borrar) no coincide con la sesión real de Firebase de esta pestaña.
+   */
+  const deleteChatMessage = async (messageId: string): Promise<void> => {
+    const target = chatMessages.find(m => m.id === messageId);
+    if (isEffectiveOnline && target?.remoteId) {
+      try {
+        await eliminarMensajeRemoto(target.remoteId);
+      } catch (err) {
+        if (err instanceof ChatApiError && err.status === 403) {
+          showNotification('No puedes eliminar mensajes de otras personas: esta restricción ahora es real (no solo de la interfaz).', 'error');
+          return;
+        }
+        const mensaje = err instanceof ChatApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo eliminar el mensaje en el servidor:', err);
+        showNotification(`No se pudo eliminar el mensaje en el servidor (${mensaje}). Se eliminó solo localmente.`, 'warning');
+      }
+    }
     setChatMessages(prev => prev.filter(m => m.id !== messageId));
     showNotification('Mensaje eliminado del chat', 'info');
   };
 
-  const clearChatChannelHistory = (channelId: string) => {
+  /**
+   * A diferencia de deleteChatMessage, esta operación replica el alcance
+   * SIN restricciones que ya tenía la versión local (cualquier personal
+   * puede limpiar un canal completo) — ver la nota de riesgo real en
+   * chat.ts: ahora borra el historial compartido de todo el equipo, no
+   * solo la copia de este navegador.
+   */
+  const clearChatChannelHistory = async (channelId: string): Promise<void> => {
+    if (isEffectiveOnline) {
+      try {
+        await limpiarHistorialCanalRemoto(channelId);
+      } catch (err) {
+        const mensaje = err instanceof ChatApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo limpiar el historial del canal en el servidor:', err);
+        showNotification(`No se pudo limpiar el historial en el servidor (${mensaje}). Se limpió solo localmente.`, 'warning');
+      }
+    }
     setChatMessages(prev => prev.filter(m => m.channelId !== channelId));
     showNotification('Historial de mensajes limpiado', 'warning');
   };

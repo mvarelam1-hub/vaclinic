@@ -679,6 +679,11 @@ export interface LabChatMessage {
   referencePatientName?: string;
   readBy: string[];
   reactions?: { emoji: string; count: number; users: string[] }[];
+  // Octavo módulo de los 9 migrados desde localStorage (mensaje_chat, ver
+  // db/migrations/0011_modulos_restantes.sql). Se llena solo si el envío
+  // remoto (POST /api/chat) tuvo éxito; igual convención que los demás
+  // remoteId de este archivo.
+  remoteId?: number;
 }
 
 export interface LabChatChannel {
