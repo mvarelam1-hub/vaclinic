@@ -7,6 +7,7 @@ import { resultadosRouter } from './resultados';
 import { auditoriaRouter } from './auditoria';
 import { examenesRouter } from './examenes';
 import { carpetasRouter } from './carpetas';
+import { episodiosRouter } from './episodios';
 
 export const apiRouter = Router();
 
@@ -26,3 +27,4 @@ apiRouter.use('/resultados', resultadosRouter);
 apiRouter.use('/auditoria', auditoriaRouter);
 apiRouter.use('/examenes', examenesRouter);
 apiRouter.use('/carpetas', carpetasRouter);
+apiRouter.use('/episodios', episodiosRouter);

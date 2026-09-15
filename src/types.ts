@@ -79,6 +79,10 @@ export interface LabEpisode {
   isTransferred?: boolean;
   destinationBranch?: BranchSiteId;
   notes?: string;
+  // Id real de episodio_4d (migración 0011) cuando este episodio se pudo
+  // crear de verdad en el backend; un episodio creado solo local (servidor
+  // caído) queda sin este campo, igual que LabOrder.remoteId.
+  remoteId?: number;
 }
 
 export interface SampleTransferManifest {

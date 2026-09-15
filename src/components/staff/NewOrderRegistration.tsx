@@ -535,7 +535,7 @@ export const NewOrderRegistration: React.FC = () => {
     }
 
     // Create 4D Lab Episode
-    const createdEpisode = addEpisode({
+    const createdEpisode = await addEpisode({
       patientId: patientObj.id,
       patientName: patientObj.fullName,
       nationalId: patientDni,

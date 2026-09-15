@@ -85,6 +85,13 @@ import {
   moverVariasOrdenesACarpetaRemota,
   CarpetasApiError
 } from '../services/carpetasApiService';
+import {
+  crearEpisodioRemoto,
+  actualizarEpisodioRemoto,
+  avanzarEpisodioRemoto,
+  resolverDuplicidadRemota,
+  EpisodiosApiError
+} from '../services/episodiosApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -138,10 +145,10 @@ interface ClinicContextType {
   addPatient: (patient: Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>) => Promise<Patient>;
   updatePatient: (id: string, updates: Partial<Patient>) => Promise<void>;
   deletePatient: (id: string) => void;
-  addEpisode: (episodeData: Omit<LabEpisode, 'id' | 'episodeNumber'>) => LabEpisode;
-  updateEpisode: (id: string, updates: Partial<LabEpisode>) => void;
-  advanceEpisodeDimension: (id: string, nextDimension: DimensionStage) => void;
-  resolveDuplicity: (id: string, action: 'keep' | 'cancel' | 'merge') => void;
+  addEpisode: (episodeData: Omit<LabEpisode, 'id' | 'episodeNumber'>) => Promise<LabEpisode>;
+  updateEpisode: (id: string, updates: Partial<LabEpisode>) => Promise<void>;
+  advanceEpisodeDimension: (id: string, nextDimension: DimensionStage) => Promise<void>;
+  resolveDuplicity: (id: string, action: 'keep' | 'cancel' | 'merge') => Promise<void>;
   addSampleTransfer: (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>) => void;
   addReport: (report: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>) => Promise<MedicalReport>;
   updateReport: (id: string, updates: Partial<MedicalReport>) => Promise<void>;
@@ -1437,45 +1444,106 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   // 4D LAB Episode & Workflow Engine
-  const addEpisode = (episodeData: Omit<LabEpisode, 'id' | 'episodeNumber'>): LabEpisode => {
+  const addEpisode = async (episodeData: Omit<LabEpisode, 'id' | 'episodeNumber'>): Promise<LabEpisode> => {
     const epSeq = Math.floor(100 + Math.random() * 900);
     const episodeNumber = `4D-${new Date().getFullYear()}-EP0${epSeq}`;
-    
-    // Check for duplicity in recent episodes for this patient
+
+    // Check for duplicity in recent episodes for this patient (respaldo
+    // local; si el episodio se crea de verdad en el backend, la detección
+    // real ocurre ahí -ver server/routes/episodios.ts- y prevalece).
     const hasRecentSameTests = episodes.some(
-      (ep) => ep.patientId === episodeData.patientId && 
+      (ep) => ep.patientId === episodeData.patientId &&
              ep.requestedTests.some(t => episodeData.requestedTests.includes(t)) &&
              new Date(ep.admissionTime).getTime() > Date.now() - 72 * 3600000
     );
 
-    const newEpisode: LabEpisode = {
+    const draftEpisode: LabEpisode = {
       ...episodeData,
       id: `ep-${Date.now()}`,
       episodeNumber,
       duplicityFlag: hasRecentSameTests || episodeData.duplicityFlag,
-      duplicityDetails: hasRecentSameTests 
+      duplicityDetails: hasRecentSameTests
         ? `ALERTA 4D LAB: Paciente con solicitud similar registrada en las últimas 72h.`
         : episodeData.duplicityDetails
     };
+
+    let newEpisode = draftEpisode;
+    const idPacienteRemoto = esPacienteIdRemoto(episodeData.patientId) ? Number(episodeData.patientId) : null;
+    if (isEffectiveOnline && idPacienteRemoto) {
+      try {
+        const creado = await crearEpisodioRemoto({
+          idPaciente: idPacienteRemoto,
+          tipoPaciente: episodeData.patientType,
+          programaSalud: episodeData.healthProgram,
+          origen: episodeData.origin,
+          medicoReferente: episodeData.referringDoctor,
+          sede: episodeData.branchId,
+          prioridad: episodeData.priority,
+          pruebasSolicitadas: episodeData.requestedTests,
+          codigosTubo: episodeData.tubeBarcodes,
+          tipoMuestra: episodeData.sampleType,
+          tatObjetivoMinutos: episodeData.tatTargetMinutes,
+          notas: episodeData.notes
+        });
+        newEpisode = {
+          ...draftEpisode,
+          id: `ep-remote-${creado.id_episodio}`,
+          episodeNumber: creado.numero_episodio,
+          remoteId: creado.id_episodio,
+          duplicityFlag: creado.marca_duplicidad,
+          duplicityDetails: creado.detalle_duplicidad || undefined
+        };
+      } catch (err) {
+        const mensaje = err instanceof EpisodiosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear el episodio 4D en el servidor:', err);
+        showNotification(`No se pudo registrar el episodio en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
 
     setEpisodes((prev) => [newEpisode, ...prev]);
     showNotification(`Episodio ${newEpisode.episodeNumber} admitido en 4D LAB.`, newEpisode.duplicityFlag ? 'warning' : 'success');
     return newEpisode;
   };
 
-  const updateEpisode = (id: string, updates: Partial<LabEpisode>) => {
+  const updateEpisode = async (id: string, updates: Partial<LabEpisode>): Promise<void> => {
+    const episode = episodes.find((ep) => ep.id === id);
+    if (isEffectiveOnline && episode?.remoteId) {
+      try {
+        await actualizarEpisodioRemoto(episode.remoteId, {
+          notas: updates.notes,
+          prioridad: updates.priority,
+          sedeDestino: updates.destinationBranch,
+          transferido: updates.isTransferred
+        });
+      } catch (err) {
+        const mensaje = err instanceof EpisodiosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar el episodio 4D en el servidor:', err);
+        showNotification(`No se pudo sincronizar el episodio con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setEpisodes((prev) =>
       prev.map((ep) => (ep.id === id ? { ...ep, ...updates } : ep))
     );
     showNotification('Episodio de laboratorio actualizado');
   };
 
-  const advanceEpisodeDimension = (id: string, nextDimension: DimensionStage) => {
+  const advanceEpisodeDimension = async (id: string, nextDimension: DimensionStage): Promise<void> => {
+    const episode = episodes.find((ep) => ep.id === id);
+    if (isEffectiveOnline && episode?.remoteId && nextDimension !== 'D1_admision') {
+      try {
+        await avanzarEpisodioRemoto(episode.remoteId, nextDimension);
+      } catch (err) {
+        const mensaje = err instanceof EpisodiosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo avanzar el episodio 4D en el servidor:', err);
+        showNotification(`No se pudo sincronizar el avance de dimensión con el servidor (${mensaje}). Se aplicó solo localmente.`, 'warning');
+      }
+    }
+
     setEpisodes((prev) =>
       prev.map((ep) => {
         if (ep.id === id) {
           const nowIso = new Date().toISOString();
-          
+
           // Automatic push notification on dimension progress
           const targetPat = patients.find(p => p.id === ep.patientId);
           if (targetPat) {
@@ -1518,7 +1586,18 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification(`Episodio avanzado a dimensión: ${nextDimension.replace('_', ' ').toUpperCase()}`);
   };
 
-  const resolveDuplicity = (id: string, action: 'keep' | 'cancel' | 'merge') => {
+  const resolveDuplicity = async (id: string, action: 'keep' | 'cancel' | 'merge'): Promise<void> => {
+    const episode = episodes.find((ep) => ep.id === id);
+    if (isEffectiveOnline && episode?.remoteId) {
+      try {
+        await resolverDuplicidadRemota(episode.remoteId, action);
+      } catch (err) {
+        const mensaje = err instanceof EpisodiosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo resolver la duplicidad del episodio 4D en el servidor:', err);
+        showNotification(`No se pudo sincronizar la resolución de duplicidad con el servidor (${mensaje}). Se aplicó solo localmente.`, 'warning');
+      }
+    }
+
     if (action === 'cancel') {
       setEpisodes((prev) => prev.filter((ep) => ep.id !== id));
       showNotification('Episodio duplicado cancelado y retirado del flujo 4D LAB', 'info');
