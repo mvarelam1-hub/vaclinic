@@ -25,7 +25,8 @@ import {
   LabChatChannelId,
   ChatMessagePriority,
   LabOrder,
-  OrderFolder
+  OrderFolder,
+  ReportParameter
 } from '../types';
 import { 
   INITIAL_PATIENTS, 
@@ -70,6 +71,12 @@ import {
 } from '../services/pacientesApiService';
 import { resolverCodigosAIdsExamen, ExamenesApiError } from '../services/examenesApiService';
 import { createOrdenRemote, OrdenesApiError } from '../services/ordenesApiService';
+import {
+  crearResultadoRemoto,
+  validarResultadoRemoto,
+  publicarResultadoRemoto,
+  ResultadosApiError
+} from '../services/resultadosApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -128,18 +135,18 @@ interface ClinicContextType {
   advanceEpisodeDimension: (id: string, nextDimension: DimensionStage) => void;
   resolveDuplicity: (id: string, action: 'keep' | 'cancel' | 'merge') => void;
   addSampleTransfer: (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>) => void;
-  addReport: (report: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>) => MedicalReport;
-  updateReport: (id: string, updates: Partial<MedicalReport>) => void;
+  addReport: (report: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>) => Promise<MedicalReport>;
+  updateReport: (id: string, updates: Partial<MedicalReport>) => Promise<void>;
   deleteReport: (id: string) => void;
   publishReport: (
-    id: string, 
-    doctorName?: string, 
-    doctorSpecialty?: string, 
+    id: string,
+    doctorName?: string,
+    doctorSpecialty?: string,
     doctorLicense?: string,
     bioanalystName?: string,
     bioanalystSpecialty?: string,
     bioanalystLicense?: string
-  ) => void;
+  ) => Promise<void>;
   activeReportToPrint: MedicalReport | null;
   setActiveReportToPrint: (report: MedicalReport | null) => void;
   activeReportToEdit: MedicalReport | null;
@@ -1526,15 +1533,87 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification(`Remesa ${manCode} despachada a sede receptora`, 'success');
   };
 
-  const addReport = (reportData: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>): MedicalReport => {
+  /**
+   * Sincroniza la CAPTURA (estado Borrador) de un informe contra el backend
+   * real (POST /api/resultados), agrupando los ReportParameter por examCode
+   * y resolviendo cada grupo al id_detalle_orden real vía
+   * `LabOrder.detalleRemoto` (ver ordenes.ts y `addOrder` más arriba).
+   *
+   * Es deliberadamente conservadora: si el informe no tiene `orderId`, o esa
+   * orden no se creó en el backend (no tiene `detalleRemoto`), o algún
+   * parámetro no trae `examCode` (informes redactados a mano, sin pasar por
+   * "Cargar Resultados" desde una orden), esos casos simplemente no se
+   * sincronizan -el informe se guarda igual, solo local, como ya ocurría
+   * antes de este cambio. Nunca lanza: cualquier error de red o de negocio
+   * se reporta con `showNotification` y se continúa.
+   *
+   * No intenta validar/publicar aquí -eso es responsabilidad exclusiva de
+   * `publishReport` (la única acción real de "publicar", también invocable
+   * directamente desde StaffDashboard), para no duplicar esa lógica.
+   */
+  const syncCapturaResultados = async (report: MedicalReport): Promise<Record<string, number> | undefined> => {
+    if (!isEffectiveOnline || !report.orderId) return undefined;
+    const orden = orders.find(o => o.id === report.orderId);
+    if (!orden || !orden.detalleRemoto || orden.detalleRemoto.length === 0) return undefined;
+
+    const porExamCode = new Map<string, ReportParameter[]>();
+    report.parameters.forEach(p => {
+      if (!p.examCode) return;
+      if (!porExamCode.has(p.examCode)) porExamCode.set(p.examCode, []);
+      porExamCode.get(p.examCode)!.push(p);
+    });
+    if (porExamCode.size === 0) return undefined;
+
+    const resultadosRemotos: Record<string, number> = { ...(report.resultadosRemotos || {}) };
+    let huboError = false;
+
+    for (const [examCode, params] of porExamCode.entries()) {
+      // Ya sincronizado en una sincronización anterior (ej. autoguardado):
+      // no reintentar la creación -el backend rechaza con 409 un segundo
+      // POST sobre el mismo detalle_orden, y de todas formas no hay un
+      // endpoint de "actualizar borrador" que usar aquí.
+      if (resultadosRemotos[examCode]) continue;
+
+      const detalle = orden.detalleRemoto.find(d => d.codigoExamen === examCode);
+      if (!detalle) continue; // examen sin detalle_orden real conocido (no se puede enlazar)
+
+      const valorCapturado = params.length === 1
+        ? String(params[0].value)
+        : JSON.stringify(params.map(p => ({ nombre: p.name, valor: p.value, unidad: p.unit, estado: p.status })));
+
+      try {
+        const creado = await crearResultadoRemoto(detalle.idDetalle, valorCapturado);
+        resultadosRemotos[examCode] = creado.id_resultado;
+      } catch (err) {
+        huboError = true;
+        const mensaje = err instanceof ResultadosApiError ? err.message : 'Error de red desconocido.';
+        console.error(`[ClinicContext] No se pudo sincronizar el resultado de "${examCode}" con el servidor:`, err);
+        showNotification(`No se pudo sincronizar el resultado de "${examCode}" con el servidor (${mensaje}). Quedó guardado solo localmente.`, 'warning');
+      }
+    }
+
+    if (huboError) {
+      showNotification('El informe se guardó, pero algunos resultados no se sincronizaron por completo con el servidor real.', 'warning');
+    }
+
+    return resultadosRemotos;
+  };
+
+  const addReport = async (reportData: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>): Promise<MedicalReport> => {
     const reportSeq = Math.floor(1000 + Math.random() * 9000);
     const reportNumber = `LAB-${new Date().getFullYear()}-${reportSeq}`;
-    const newReport: MedicalReport = {
+    const draftReport: MedicalReport = {
       ...reportData,
       id: `rep-${Date.now()}`,
       reportNumber,
       qrVerificationCode: `VALID-SANRAFAEL-${reportNumber}`
     };
+
+    // Intenta crear en el backend real (Borrador) los resultados que se
+    // puedan enlazar con la orden de origen (ver syncCapturaResultados).
+    const resultadosRemotos = await syncCapturaResultados(draftReport);
+    const newReport: MedicalReport = resultadosRemotos ? { ...draftReport, resultadosRemotos } : draftReport;
+
     setReports((prev) => [newReport, ...prev]);
 
     if (!isEffectiveOnline) {
@@ -1572,13 +1651,22 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return newReport;
   };
 
-  const updateReport = (id: string, updates: Partial<MedicalReport>) => {
+  const updateReport = async (id: string, updates: Partial<MedicalReport>): Promise<void> => {
+    const existente = reports.find((r) => r.id === id);
+    // Se arma el informe completo resultante ANTES de escribir el estado,
+    // porque syncCapturaResultados necesita ver `parameters`/`orderId` ya
+    // fusionados (updates puede traer solo un subconjunto de campos, ej.
+    // AiSummaryModeModal.tsx que solo actualiza patientExplanation).
+    const merged: MedicalReport | undefined = existente ? { ...existente, ...updates } : undefined;
+    const resultadosRemotos = merged ? await syncCapturaResultados(merged) : undefined;
+    const finalUpdates: Partial<MedicalReport> = resultadosRemotos ? { ...updates, resultadosRemotos } : updates;
+
     setReports((prev) =>
       prev.map((r) => {
         if (r.id === id) {
-          const updated = { ...r, ...updates };
+          const updated = { ...r, ...finalUpdates };
           // If status transitioned to published, send push notification
-          if (r.status !== 'publicado' && updates.status === 'publicado') {
+          if (r.status !== 'publicado' && finalUpdates.status === 'publicado') {
             sendPushNotification({
               patientId: updated.patientId,
               patientName: updated.patientName,
@@ -1607,7 +1695,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         entityType: 'Informe Médico',
         entityId: id,
         description: `Actualización de informe ID ${id}`,
-        payload: updates
+        payload: finalUpdates
       });
       showNotification('Informe médico actualizado (Guardado en cola fuera de línea)', 'warning');
     } else {
@@ -1620,7 +1708,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification('Informe eliminado', 'info');
   };
 
-  const publishReport = (
+  const publishReport = async (
     id: string,
     doctorName = 'Dr. Alejandro Valenzuela Morales',
     doctorSpecialty = 'Médico Patólogo Clínico & Diagnóstico',
@@ -1628,9 +1716,43 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     bioanalystName = 'Licda. Elena Morales Cruz',
     bioanalystSpecialty = 'Licenciada en Bioanálisis Clínico & Microbiología',
     bioanalystLicense = 'Col. Bioanálisis #4192 / MSPAS-8812'
-  ) => {
+  ): Promise<void> => {
     const hash = '0x' + Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-    
+
+    // Esta es la única acción real de "publicar" (también se invoca
+    // directamente desde StaffDashboard.tsx) — aquí, y solo aquí, se
+    // ejecutan las transiciones reales Borrador -> Validado -> Publicado en
+    // el backend para cada resultado ya capturado de este informe
+    // (`resultadosRemotos`, rellenado por `syncCapturaResultados` en
+    // addReport/updateReport). Un 403 aquí significa que el rol autenticado
+    // no tiene `validacion_firma_digital`/`validacion_publicacion` -es la
+    // separación de roles real que exige la tesis (cap. 4), no un bug a
+    // evadir: se reporta honestamente y el informe queda "publicado" solo en
+    // la vista local del staff, no en el backend real.
+    const objetivo = reports.find(r => r.id === id);
+    const resultadosRemotosObjetivo: Record<string, number> | undefined = objetivo?.resultadosRemotos;
+    if (isEffectiveOnline && resultadosRemotosObjetivo) {
+      const entradas: Array<[string, number]> = Object.entries(resultadosRemotosObjetivo);
+      let algunoFallo = false;
+      for (const [examCode, idResultado] of entradas) {
+        try {
+          await validarResultadoRemoto(idResultado);
+          await publicarResultadoRemoto(idResultado);
+        } catch (err) {
+          algunoFallo = true;
+          const mensaje = err instanceof ResultadosApiError ? err.message : 'Error de red desconocido.';
+          console.error(`[ClinicContext] No se pudo validar/publicar el resultado real de "${examCode}" (id ${idResultado}):`, err);
+          showNotification(
+            `No se pudo validar/publicar "${examCode}" en el servidor (${mensaje}). El informe quedó "publicado" en esta pantalla, pero ese resultado no llegó a "Publicado" en el backend real.`,
+            'warning'
+          );
+        }
+      }
+      if (!algunoFallo && entradas.length > 0) {
+        showNotification('Resultados validados y publicados en el servidor real (Borrador → Validado → Publicado).', 'success');
+      }
+    }
+
     let publishedRep: MedicalReport | null = null;
 
     setReports((prev) =>
@@ -2192,7 +2314,12 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           seqNumber: newSeq,
           orderNumber: resultado.numero_orden,
           remoteId: resultado.id_orden,
-          codigoConsulta: resultado.codigo_consulta
+          codigoConsulta: resultado.codigo_consulta,
+          // Detalle real (un id_detalle por examen) devuelto por POST
+          // /api/ordenes -necesario más adelante para poder capturar
+          // resultados reales contra esta orden (ver `addReport` más abajo
+          // y src/types.ts `LabOrder.detalleRemoto`).
+          detalleRemoto: resultado.detalle
         };
         setOrders(prev => [newOrder, ...prev]);
         showNotification(`Orden ${newOrder.orderNumber} registrada en la base de datos real. Código de consulta: ${resultado.codigo_consulta}`);

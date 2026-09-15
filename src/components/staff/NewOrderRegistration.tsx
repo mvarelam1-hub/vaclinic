@@ -45,7 +45,7 @@ import {
   analyzeTubesForParameters 
 } from '../../utils/sampleTubeRegistry';
 import { TubeBadge } from '../common/TubeBadge';
-import { LabCatalogItem, OriginDepartment, PatientType, MedicalReport } from '../../types';
+import { LabCatalogItem, OriginDepartment, PatientType, MedicalReport, LabOrder } from '../../types';
 import { SmartBirthDatePicker, PreselectedRangeItem } from './SmartBirthDatePicker';
 import { generateDemographicParametersForTests } from '../../utils/referenceRangeEvaluator';
 
@@ -211,6 +211,13 @@ export const NewOrderRegistration: React.FC = () => {
     total: number;
     pending: number;
     tubesRequired: Array<{ tube: TubeDefinition; label: string; count: number; drawOrder: number }>;
+    // Códigos de examen (catálogo) en el mismo orden que testsList, y la
+    // orden real (LabOrder) tal como la devolvió addOrder -incluyendo
+    // detalleRemoto si se creó en el backend-, para poder enlazar de verdad
+    // el informe que se redacte con esta orden (ver
+    // handleLoadResultsWithPreselectedRanges y ClinicContext.tsx `addReport`).
+    examCodes?: string[];
+    savedOrder?: LabOrder;
   } | null>(null);
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
 
@@ -621,7 +628,9 @@ export const NewOrderRegistration: React.FC = () => {
       testsList: selectedTests.map(t => t.name),
       total: totalAmount,
       pending: parseFloat(pendingBalance) || 0,
-      tubesRequired: tubesDetailed
+      tubesRequired: tubesDetailed,
+      examCodes: selectedTests.map(t => t.code),
+      savedOrder
     });
   };
 
@@ -655,12 +664,18 @@ export const NewOrderRegistration: React.FC = () => {
     const effectiveAge = modalData.patientAge ?? (patientObj?.age || parseInt(age, 10) || 35);
     const effectiveGender = modalData.patientGender ?? (patientObj?.gender || (gender.startsWith('F') ? 'F' : 'M'));
     
-    // Generate demographic parameters pre-calibrated to this patient's age and sex
+    // Generate demographic parameters pre-calibrated to this patient's age and sex.
+    // Se pasan los examCodes reales del catálogo (mismo orden que testsList)
+    // para que cada parámetro generado quede etiquetado con el examen que lo
+    // originó -así, al guardar el informe, ClinicContext.tsx `addReport`
+    // puede agrupar por examCode y enlazarlo con el id_detalle_orden real de
+    // esta orden (modalData.savedOrder.detalleRemoto).
     const parameters = generateDemographicParametersForTests(
       modalData.testsList,
       effectiveAge,
       effectiveGender,
-      catalogTests
+      catalogTests,
+      modalData.examCodes
     );
 
     const draftReport: MedicalReport = {
@@ -686,7 +701,13 @@ export const NewOrderRegistration: React.FC = () => {
       recommendations: [
         'Correlacionar hallazgos con la evaluación clínica del médico tratante.'
       ],
-      qrVerificationCode: `https://vaclinic.laboratorio.gt/valida?ord=${modalData.orderNumber.replace('#', '')}&dni=${modalData.nationalId}`
+      qrVerificationCode: `https://vaclinic.laboratorio.gt/valida?ord=${modalData.orderNumber.replace('#', '')}&dni=${modalData.nationalId}`,
+      // Vínculo real con la orden -solo se rellena si la orden se creó de
+      // verdad en el backend (savedOrder.id ya es el id real "ord-<n>"); si
+      // la orden quedó solo local (servidor caído), orderId queda undefined
+      // y `addReport` simplemente no podrá sincronizar resultados, tal como
+      // ya ocurre con pacientes/órdenes en ese mismo escenario.
+      orderId: modalData.savedOrder?.id
     };
 
     setActiveReportToEdit(draftReport);

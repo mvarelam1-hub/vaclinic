@@ -41,16 +41,22 @@ vi.mock('../db', () => ({
 
 // EXAM_PRICES: id_examen -> precio, simulando el catálogo real.
 const EXAM_PRICES: Record<number, number> = { 1: 45.0, 2: 120.5 };
+// EXAM_CODES: id_examen -> codigo_examen, simulando el catálogo real (ver
+// migración 0010_catalogo_examenes_real.sql).
+const EXAM_CODES: Record<number, string> = { 1: 'GLU-001', 2: 'PAN-01' };
+let detalleAutoId = 900;
 
 function programClient(client: { query: ReturnType<typeof vi.fn> }) {
   client.query.mockImplementation(async (sql: string, params: any[] = []) => {
     if (sql.startsWith('BEGIN') || sql.startsWith('COMMIT') || sql.startsWith('ROLLBACK')) return {};
     if (sql.includes('INSERT INTO orden')) return { rows: [{ id_orden: 100, numero_orden: params[0] }] };
-    if (sql.includes('SELECT precio FROM examen')) {
+    if (sql.includes('FROM examen')) {
       const idExamen = params[0];
-      return idExamen in EXAM_PRICES ? { rows: [{ precio: EXAM_PRICES[idExamen] }] } : { rows: [] };
+      return idExamen in EXAM_PRICES
+        ? { rows: [{ precio: EXAM_PRICES[idExamen], codigo_examen: EXAM_CODES[idExamen] ?? null }] }
+        : { rows: [] };
     }
-    if (sql.includes('INSERT INTO detalle_orden')) return { rows: [] };
+    if (sql.includes('INSERT INTO detalle_orden')) return { rows: [{ id_detalle: detalleAutoId++ }] };
     if (sql.includes('fn_generar_codigo_consulta')) return { rows: [{ codigo: 'ABCD1234' }] };
     return { rows: [] };
   });
@@ -96,6 +102,14 @@ describe('POST /api/ordenes (partición de equivalencia)', () => {
     // esta función nunca se llamaba desde la ruta y la orden quedaba sin
     // forma de que el paciente la consultara en el Portal.
     expect(res.body.codigo_consulta).toBe('ABCD1234');
+    // El detalle real (un elemento por examen, con su id_detalle y
+    // codigo_examen del catálogo) debe volver en la respuesta — el frontend
+    // lo necesita para enlazar después cada resultado capturado con su
+    // detalle_orden exacto (ver src/types.ts `LabOrder.detalleRemoto`).
+    expect(res.body.detalle).toHaveLength(2);
+    expect(res.body.detalle[0]).toMatchObject({ idExamen: 1, codigoExamen: 'GLU-001' });
+    expect(res.body.detalle[1]).toMatchObject({ idExamen: 2, codigoExamen: 'PAN-01' });
+    expect(typeof res.body.detalle[0].idDetalle).toBe('number');
     const calledSql = lastClient!.query.mock.calls.map((c) => c[0]);
     expect(calledSql).toContain('COMMIT');
     expect(calledSql).not.toContain('ROLLBACK');

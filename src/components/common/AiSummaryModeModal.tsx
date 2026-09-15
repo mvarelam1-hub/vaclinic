@@ -182,13 +182,23 @@ export const AiSummaryModeModal: React.FC<AiSummaryModeModalProps> = ({
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
-  const handleSaveToReport = () => {
+  const handleSaveToReport = async () => {
     if (!summaryData?.summaryParagraph) return;
     const updated: MedicalReport = {
       ...report,
       patientExplanation: summaryData.summaryParagraph
     };
-    updateReport(updated);
+    // BUG real preexistente encontrado al migrar updateReport a la API real:
+    // esta llamada pasaba el objeto MedicalReport completo como si fuera el
+    // `id` (firma real: updateReport(id, updates)). Nunca se detectó porque
+    // useClinic()/ClinicContextType se resuelve como `any` en este proyecto
+    // (falta @types/react + no hay "strict"/"noImplicitAny" en tsconfig.json
+    // -ver el hallazgo documentado en los commits de pacientes/órdenes), así
+    // que tsc jamás marcó el desajuste de firma. En tiempo de ejecución,
+    // `id` terminaba siendo el objeto completo, `r.id === id` nunca
+    // encontraba coincidencia, y "Guardar Resumen IA en el Informe" no
+    // persistía nada -un no-op silencioso. Se corrige aquí pasando el id.
+    await updateReport(updated.id, updated);
     if (onApplyExplanation) {
       onApplyExplanation(summaryData.summaryParagraph);
     }

@@ -714,17 +714,34 @@ export function generateDemographicParametersForTests(
   testsList: string[],
   patientAge: number = 35,
   patientGender: 'M' | 'F' | 'Otro' | string = 'M',
-  catalogTests?: LabCatalogItem[]
+  catalogTests?: LabCatalogItem[],
+  // Códigos reales del catálogo (examen.codigo_examen, ej. "PAN-01"),
+  // paralelos a testsList por índice -mismo orden en el que
+  // NewOrderRegistration.tsx arma `selectedTests`/`examCodes` al crear la
+  // orden real. Al tenerlos, cada ReportParameter generado para un test
+  // queda etiquetado con el examCode que lo originó (ver el bucle de abajo),
+  // lo cual permite después agrupar los parámetros por examen real y
+  // mapearlos 1:1 a un id_detalle_orden/resultado del backend (ver
+  // ClinicContext.tsx `addReport` y `LabOrder.detalleRemoto`). Es opcional y
+  // retrocompatible: si no se pasa, o falta algún código, esos parámetros
+  // simplemente no quedan etiquetados (como antes de este cambio).
+  testCodes?: Array<string | undefined>
 ): ReportParameter[] {
   const params: ReportParameter[] = [];
   let pId = 1;
 
-  testsList.forEach(tName => {
+  testsList.forEach((tName, testIdx) => {
     const lower = tName.toLowerCase();
-    
+    const examCode = testCodes?.[testIdx];
+    // Índice donde empiezan los parámetros de ESTE test en particular -un
+    // test puede explotar en varios ReportParameter (ej. hemograma -> 5
+    // sub-parámetros); todos comparten el mismo examCode porque todos
+    // provienen del mismo examen/detalle_orden real.
+    const paramsStartIdx = params.length;
+
     // Check if matching catalog item exists
-    const catalogMatch = catalogTests?.find(c => 
-      c.name.toLowerCase() === lower || 
+    const catalogMatch = catalogTests?.find(c =>
+      c.name.toLowerCase() === lower ||
       c.code.toLowerCase() === lower ||
       lower.includes(c.name.toLowerCase())
     );
@@ -892,6 +909,12 @@ export function generateDemographicParametersForTests(
         methodology: 'Metodología Estandarizada CLSI',
         notes: resolved.demographicRuleApplied
       });
+    }
+
+    if (examCode) {
+      for (let i = paramsStartIdx; i < params.length; i++) {
+        params[i].examCode = examCode;
+      }
     }
   });
 

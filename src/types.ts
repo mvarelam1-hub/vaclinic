@@ -113,6 +113,12 @@ export interface ReportParameter {
   section?: string; // Área o subdivisión clínica (ej: "Serie Roja", "Función Renal", "Examen Químico")
   area?: string;    // Alias de section
   criticalConfirmed?: boolean; // Confirmación analítica/médica de valor crítico o alerta
+  // Código real del catálogo (examen.codigo_examen, ej. "PAN-01") que originó
+  // este parámetro cuando se generó a partir de una orden real (ver
+  // generateDemographicParametersForTests en referenceRangeEvaluator.ts).
+  // Permite agrupar parámetros por examen real y mapearlos 1:1 a filas de
+  // `resultado` en el backend (un resultado por detalle_orden/examen).
+  examCode?: string;
 }
 
 export interface Patient {
@@ -266,6 +272,16 @@ export interface MedicalReport {
   episodeId?: string;
   branchId?: BranchSiteId;
   attachedAnalyzerReport?: AttachedAnalyzerReport;
+  // Vínculo real con la orden que originó este informe (LabOrder.id, no
+  // necesariamente LabOrder.remoteId) — permite ubicar `detalleRemoto` de la
+  // orden y así resolver a qué `id_detalle_orden` corresponde cada grupo de
+  // parámetros (por examCode) al sincronizar con /api/resultados.
+  orderId?: string;
+  // Mapa examCode -> id_resultado ya creado/sincronizado en el backend para
+  // este informe, para saber si hay que crear (POST) o solo validar/publicar
+  // (PATCH) en sincronizaciones posteriores. Rellenado por
+  // ClinicContext.tsx `addReport`/`updateReport`.
+  resultadosRemotos?: Record<string, number>;
 }
 
 export interface ReportTemplate {
@@ -730,4 +746,10 @@ export interface LabOrder {
   examCodes?: string[];
   remoteId?: number;
   codigoConsulta?: string;
+  // Detalle real de la orden devuelto por POST /api/ordenes (una fila por
+  // examen, con su id_detalle_orden y el codigo_examen del catálogo) —
+  // permite, al capturar resultados, mapear cada grupo de ReportParameter
+  // (por examCode) al id_detalle_orden exacto que exige POST /api/resultados.
+  // Queda vacío si la orden no pudo crearse en el backend (solo local).
+  detalleRemoto?: Array<{ idDetalle: number; idExamen: number; codigoExamen: string | null }>;
 }

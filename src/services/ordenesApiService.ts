@@ -15,10 +15,21 @@ export class OrdenesApiError extends Error {
   }
 }
 
+export interface OrdenDetalleApiRow {
+  idDetalle: number;
+  idExamen: number;
+  codigoExamen: string | null;
+}
+
 export interface OrdenApiResult {
   id_orden: number;
   numero_orden: string;
   codigo_consulta: string;
+  // Un elemento por examen de la orden, con su id_detalle real — necesario
+  // para poder crear después cada resultado (POST /api/resultados) contra el
+  // detalle_orden exacto (ver src/context/ClinicContext.tsx `addOrder` y
+  // `LabOrder.detalleRemoto` en src/types.ts).
+  detalle?: OrdenDetalleApiRow[];
 }
 
 export async function createOrdenRemote(idPaciente: number, examenesIds: number[]): Promise<OrdenApiResult> {

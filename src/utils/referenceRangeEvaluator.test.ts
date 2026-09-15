@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { getAgeCategory, parseReferenceRange, evaluateParameterStatus } from './referenceRangeEvaluator';
+import {
+  getAgeCategory,
+  parseReferenceRange,
+  evaluateParameterStatus,
+  generateDemographicParametersForTests
+} from './referenceRangeEvaluator';
 
 /**
  * E10 (ACS, Fase 2) — pruebas unitarias de FRONTEND (requisito "distribuidas
@@ -89,5 +94,65 @@ describe('evaluateParameterStatus', () => {
   });
   it('customMin/customMax tienen prioridad sobre el texto del rango', () => {
     expect(evaluateParameterStatus(15, 'esto no se puede parsear', 10, 20)).toBe('normal');
+  });
+});
+
+/**
+ * Módulo 3 (Resultados, "Diseñar el vínculo completo ahora"): estas pruebas
+ * cubren el nuevo parámetro opcional `testCodes` de
+ * generateDemographicParametersForTests, que etiqueta cada ReportParameter
+ * generado con el `examCode` real del catálogo (examen.codigo_examen) que lo
+ * originó. Esto es lo que permite después, en ClinicContext.tsx `addReport`,
+ * agrupar los parámetros por examen real y enlazarlos con el
+ * id_detalle_orden exacto que exige POST /api/resultados -antes de este
+ * cambio no existía ningún campo que conectara un ReportParameter con un
+ * examen real de la orden.
+ */
+describe('generateDemographicParametersForTests (vínculo con examCode)', () => {
+  it('sin testCodes (retrocompatibilidad), ningún parámetro queda etiquetado con examCode', () => {
+    const params = generateDemographicParametersForTests(['Glucosa en Ayunas'], 30, 'M');
+    expect(params.length).toBeGreaterThan(0);
+    expect(params.every(p => p.examCode === undefined)).toBe(true);
+  });
+
+  it('un test de un solo parámetro (glucosa) queda etiquetado con su examCode', () => {
+    const params = generateDemographicParametersForTests(['Glucosa en Ayunas'], 30, 'M', undefined, ['GLU-001']);
+    expect(params).toHaveLength(1);
+    expect(params[0].examCode).toBe('GLU-001');
+  });
+
+  it('un test que explota en varios parámetros (hemograma) etiqueta TODOS sus sub-parámetros con el mismo examCode', () => {
+    const params = generateDemographicParametersForTests(['Hemograma Completo'], 30, 'F', undefined, ['HEM-01']);
+    expect(params.length).toBeGreaterThan(1);
+    expect(params.every(p => p.examCode === 'HEM-01')).toBe(true);
+  });
+
+  it('con varios tests, cada grupo de parámetros recibe el examCode que le corresponde por posición', () => {
+    const params = generateDemographicParametersForTests(
+      ['Glucosa en Ayunas', 'Perfil Lipídico'],
+      40,
+      'M',
+      undefined,
+      ['GLU-001', 'LIP-01']
+    );
+    const glucosa = params.filter(p => p.name === 'Glucosa en Ayunas');
+    const lipidicos = params.filter(p => p.name !== 'Glucosa en Ayunas');
+    expect(glucosa.every(p => p.examCode === 'GLU-001')).toBe(true);
+    expect(lipidicos.length).toBeGreaterThan(0);
+    expect(lipidicos.every(p => p.examCode === 'LIP-01')).toBe(true);
+  });
+
+  it('si testCodes es más corto que testsList, los tests sin código correspondiente quedan sin examCode (no revienta)', () => {
+    const params = generateDemographicParametersForTests(
+      ['Glucosa en Ayunas', 'Ácido Úrico'],
+      40,
+      'M',
+      undefined,
+      ['GLU-001']
+    );
+    const glucosa = params.filter(p => p.name === 'Glucosa en Ayunas');
+    const resto = params.filter(p => p.name !== 'Glucosa en Ayunas');
+    expect(glucosa.every(p => p.examCode === 'GLU-001')).toBe(true);
+    expect(resto.every(p => p.examCode === undefined)).toBe(true);
   });
 });

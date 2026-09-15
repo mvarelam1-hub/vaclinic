@@ -24,13 +24,24 @@ ordenesRouter.post('/', requirePermission('admision_crear_ordenes'), asyncHandle
     );
     const idOrden = ordenRows[0].id_orden;
 
+    // Se acumulan las filas de detalle_orden creadas (con su codigo_examen)
+    // para devolverlas en la respuesta: el frontend las necesita para poder
+    // enlazar después cada parámetro de un informe (por examCode) con el
+    // id_detalle_orden exacto que exige POST /api/resultados (ver
+    // ClinicContext.tsx `addOrder`/`addReport` y src/types.ts `LabOrder.detalleRemoto`).
+    const detalleCreado: Array<{ idDetalle: number; idExamen: number; codigoExamen: string | null }> = [];
     for (const idExamen of examenesIds) {
-      const { rows: examRows } = await client.query('SELECT precio FROM examen WHERE id_examen = $1', [idExamen]);
+      const { rows: examRows } = await client.query('SELECT precio, codigo_examen FROM examen WHERE id_examen = $1', [idExamen]);
       if (examRows.length === 0) throw new Error(`Examen ${idExamen} no existe en el catálogo.`);
-      await client.query(
-        `INSERT INTO detalle_orden (id_orden, id_examen, precio_unitario) VALUES ($1, $2, $3)`,
+      const { rows: detalleRows } = await client.query(
+        `INSERT INTO detalle_orden (id_orden, id_examen, precio_unitario) VALUES ($1, $2, $3) RETURNING id_detalle`,
         [idOrden, idExamen, examRows[0].precio]
       );
+      detalleCreado.push({
+        idDetalle: detalleRows[0].id_detalle,
+        idExamen,
+        codigoExamen: examRows[0].codigo_examen ?? null
+      });
     }
 
     // Genera el código único de consulta pública de esta orden (único
@@ -46,7 +57,7 @@ ordenesRouter.post('/', requirePermission('admision_crear_ordenes'), asyncHandle
     );
 
     await client.query('COMMIT');
-    return res.status(201).json({ ...ordenRows[0], codigo_consulta: codigoRows[0].codigo });
+    return res.status(201).json({ ...ordenRows[0], codigo_consulta: codigoRows[0].codigo, detalle: detalleCreado });
   } catch (err: any) {
     await client.query('ROLLBACK');
     return res.status(400).json({ error: err.message });

@@ -636,7 +636,7 @@ export const ReportEditor: React.FC = () => {
   };
 
   // Executes the actual storage after confirmation
-  const executeSave = (targetStatus: ReportStatus, paramsToSave: ReportParameter[]) => {
+  const executeSave = async (targetStatus: ReportStatus, paramsToSave: ReportParameter[]) => {
     const cleanRecommendations = recommendations.filter(r => r.trim().length > 0);
     const hasCritical = paramsToSave.some(p => p.status === 'critical');
 
@@ -674,21 +674,28 @@ export const ReportEditor: React.FC = () => {
         validationHash: activeReportToEdit?.signature?.validationHash || 
           ('0x' + Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join(''))
       },
-      qrVerificationCode: activeReportToEdit?.qrVerificationCode || `VC-AUTH-${Math.floor(100000 + Math.random() * 900000)}`
+      qrVerificationCode: activeReportToEdit?.qrVerificationCode || `VC-AUTH-${Math.floor(100000 + Math.random() * 900000)}`,
+      // Vínculo real con la orden de origen (si este informe se cargó desde
+      // "Cargar Resultados" en una orden real) y los resultados ya
+      // sincronizados con el backend en un guardado anterior -sin esto,
+      // cada guardado perdería el enlace y ClinicContext.tsx intentaría
+      // crear el resultado de nuevo (409 del backend).
+      orderId: activeReportToEdit?.orderId,
+      resultadosRemotos: activeReportToEdit?.resultadosRemotos
     };
 
     if (activeReportToEdit && activeReportToEdit.id) {
-      updateReport(activeReportToEdit.id, reportData);
+      await updateReport(activeReportToEdit.id, reportData);
       if (targetStatus === 'publicado') {
-        publishReport(activeReportToEdit.id);
+        await publishReport(activeReportToEdit.id);
         showNotification('Informe firmado y publicado exitosamente con notificación push Firebase al paciente', 'success');
       } else {
         showNotification('Informe actualizado correctamente', 'success');
       }
     } else {
-      const created = addReport(reportData);
+      const created = await addReport(reportData);
       if (targetStatus === 'publicado' && created) {
-        publishReport(created.id);
+        await publishReport(created.id);
         showNotification('Nuevo informe registrado y publicado con notificación push Firebase al paciente', 'success');
       } else {
         showNotification('Nuevo informe registrado con éxito', 'success');
@@ -700,10 +707,10 @@ export const ReportEditor: React.FC = () => {
   };
 
   // Callback when confirmed from the CriticalValuesConfirmationModal
-  const handleConfirmAndSaveFromModal = (updatedParams: ReportParameter[], confirmedStatus: ReportStatus) => {
+  const handleConfirmAndSaveFromModal = async (updatedParams: ReportParameter[], confirmedStatus: ReportStatus) => {
     setParameters(updatedParams);
     setShowCriticalConfirmModal(false);
-    executeSave(confirmedStatus, updatedParams);
+    await executeSave(confirmedStatus, updatedParams);
   };
 
   // Callback when hematology analyzer results (Ozelle CBC) are loaded or uploaded
@@ -729,7 +736,7 @@ Histogramas e Imágenes Celulares: 3 curvas de distribución y ${data.morphology
   };
 
   // Save report (either as draft, in review, or published) with critical values validation
-  const handleSave = (targetStatus: ReportStatus) => {
+  const handleSave = async (targetStatus: ReportStatus) => {
     if (!title.trim()) {
       showNotification('El informe debe tener un título de estudio', 'warning');
       return;
@@ -750,7 +757,7 @@ Histogramas e Imágenes Celulares: 3 curvas de distribución y ${data.morphology
     }
 
     // If all normal, proceed immediately
-    executeSave(targetStatus, parameters);
+    await executeSave(targetStatus, parameters);
   };
 
   return (
