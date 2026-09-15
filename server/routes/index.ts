@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireStaffAuth } from '../auth-firebase';
 import { portalRouter } from './portal';
+import { preferenciasRouter } from './preferencias';
 import { pacientesRouter } from './pacientes';
 import { ordenesRouter } from './ordenes';
 import { resultadosRouter } from './resultados';
@@ -21,6 +22,10 @@ export const apiRouter = Router();
 // Portal del paciente: SIN requireStaffAuth (no es personal), usa su propio
 // token de portal (ver portal.ts).
 apiRouter.use('/portal', portalRouter);
+
+// Preferencias de notificación del paciente: igual que /portal, patient-facing,
+// sin requireStaffAuth — usa el mismo requirePortalToken (ver preferencias.ts).
+apiRouter.use('/preferencias', preferenciasRouter);
 
 // Todo lo demás es personal autenticado con Firebase + permisos por rol.
 apiRouter.get('/auth/whoami', requireStaffAuth, (req, res) => {

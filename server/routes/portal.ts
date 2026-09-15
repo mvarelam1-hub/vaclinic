@@ -88,7 +88,10 @@ portalRouter.post('/login', asyncHandler(async (req, res) => {
   return res.json({ token, expiresInSeconds: 900 });
 }));
 
-function requirePortalToken(req: any, res: any, next: any) {
+// Exportado porque otros módulos patient-facing (ver server/routes/preferencias.ts,
+// noveno de los 9 migrados desde localStorage) también autentican al paciente
+// con este mismo token de portal, en vez de duplicar la lógica de verificación.
+export function requirePortalToken(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const payload = token ? verifyPortalToken(token) : null;

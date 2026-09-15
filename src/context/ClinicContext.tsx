@@ -561,22 +561,54 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return INITIAL_PUSH_NOTIFICATIONS;
   });
 
-  // Load Notification Preferences
-  const [patientNotificationPrefs, setPatientNotificationPrefs] = useState<PatientNotificationPreferences>(() => {
+  // Preferencias de notificación por paciente — noveno módulo de los 9
+  // migrados desde localStorage (ver preferencia_notificacion_paciente,
+  // db/migrations/0011_modulos_restantes.sql, y
+  // server/routes/preferencias.ts).
+  //
+  // CORRECCIÓN DE UN BUG REAL descubierto al diseñar la migración de este
+  // módulo: antes esta clave guardaba UN SOLO objeto de preferencias
+  // compartido por TODO el navegador/app, sin distinguir de qué paciente
+  // era -aunque el Portal es, por diseño, una sesión de un paciente a la
+  // vez-. En la práctica esto podía mostrar/usar las preferencias de un
+  // paciente para decidir el comportamiento de otro (ver sendPushNotification
+  // más abajo, que antes consultaba este objeto global en vez de las del
+  // paciente destinatario de esa notificación puntual). Ahora se guarda un
+  // mapa por id de paciente; `patientNotificationPrefs` sigue existiendo
+  // como valor computado para el paciente actualmente autenticado en el
+  // Portal (selectedPatientId), así que los componentes que ya lo leían
+  // (PatientAccountView.tsx, PatientNotificationCenter.tsx) no necesitan
+  // ningún cambio.
+  const DEFAULT_PATIENT_NOTIFICATION_PREFS: PatientNotificationPreferences = {
+    webPushEnabled: true,
+    whatsappAlerts: true,
+    emailAlerts: true,
+    criticalAlertsOnly: false,
+    healthTipsEnabled: true
+  };
+  const [patientNotificationPrefsByPatient, setPatientNotificationPrefsByPatient] = useState<Record<string, PatientNotificationPreferences>>(() => {
     try {
       const saved = localStorage.getItem(PUSH_PREFS_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && 'webPushEnabled' in parsed) {
+          // Formato antiguo (un solo objeto, sin ids de paciente): se
+          // conserva como valor por defecto en vez de descartarlo en
+          // silencio, pero deja de compartirse entre pacientes a partir de
+          // ahora -cada uno personaliza el suyo desde aquí en adelante-.
+          return { __default__: { ...DEFAULT_PATIENT_NOTIFICATION_PREFS, ...parsed } };
+        }
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
     } catch (e) {
       console.error(e);
     }
-    return {
-      webPushEnabled: true,
-      whatsappAlerts: true,
-      emailAlerts: true,
-      criticalAlertsOnly: false,
-      healthTipsEnabled: true
-    };
+    return {};
   });
+  const getPatientNotificationPrefs = (patientId?: string | null): PatientNotificationPreferences =>
+    (patientId && patientNotificationPrefsByPatient[patientId]) ||
+    patientNotificationPrefsByPatient.__default__ ||
+    DEFAULT_PATIENT_NOTIFICATION_PREFS;
 
   // Load Lab Catalog Tests (161 Factory tests)
   const [catalogTests, setCatalogTests] = useState<LabCatalogItem[]>(() => {
@@ -980,11 +1012,11 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     try {
-      localStorage.setItem(PUSH_PREFS_STORAGE_KEY, JSON.stringify(patientNotificationPrefs));
+      localStorage.setItem(PUSH_PREFS_STORAGE_KEY, JSON.stringify(patientNotificationPrefsByPatient));
     } catch (e) {
       console.error(e);
     }
-  }, [patientNotificationPrefs]);
+  }, [patientNotificationPrefsByPatient]);
 
   useEffect(() => {
     try {
@@ -1296,8 +1328,12 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setPushNotifications((prev) => [newNotif, ...prev]);
     setActivePushToast(newNotif);
 
-    // Attempt native browser notification & chime
-    if (patientNotificationPrefs.webPushEnabled) {
+    // Attempt native browser notification & chime. Usa las preferencias
+    // reales del paciente DESTINATARIO de esta notificación puntual
+    // (notifData.patientId), no las del paciente actualmente
+    // seleccionado/autenticado en esta pestaña -antes de la corrección del
+    // bug de "singleton" (ver más arriba) ambos podían ser distintos-.
+    if (getPatientNotificationPrefs(notifData.patientId).webPushEnabled) {
       PushNotificationService.dispatchBrowserNotification(newNotif);
     }
 
@@ -1330,8 +1366,35 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setActivePushToast(null);
   };
 
+  // Valor computado para el paciente actualmente autenticado en el Portal
+  // (selectedPatientId) — ver la nota extensa junto al estado
+  // patientNotificationPrefsByPatient más arriba sobre por qué ya no es
+  // un solo objeto global.
+  const patientNotificationPrefs: PatientNotificationPreferences = getPatientNotificationPrefs(selectedPatientId);
+
+  /**
+   * NOTA DE ALCANCE REAL (noveno módulo, preferencias push): el backend
+   * real ya existe, está probado y verificado end-to-end
+   * (server/routes/preferencias.ts, GET/PUT /api/preferencias con
+   * requirePortalToken), pero esta función SIGUE sin llamarlo. Motivo:
+   * ese endpoint exige un token de portal real, obtenido de
+   * POST /api/portal/login con un código de consulta vigente -y
+   * authenticatePatient() de este mismo archivo TODAVÍA usa el mecanismo
+   * local/inseguro anterior a la Etapa 3 (compara accessCode/pinCode
+   * contra el arreglo de pacientes cargado en el navegador), sin llamar
+   * nunca a ese login real-. Conectar esta función al backend real
+   * requeriría primero migrar la autenticación real del Portal del
+   * Paciente, un cambio de alcance mucho mayor que "preferencias de
+   * notificación" y que no se puede resolver dentro de este módulo. Ver
+   * src/services/preferenciasApiService.ts, que queda listo para cuando
+   * esa migración ocurra.
+   */
   const updatePatientNotificationPrefs = (prefs: Partial<PatientNotificationPreferences>) => {
-    setPatientNotificationPrefs((prev) => ({ ...prev, ...prefs }));
+    const clave = selectedPatientId || '__default__';
+    setPatientNotificationPrefsByPatient((prev) => ({
+      ...prev,
+      [clave]: { ...(prev[clave] || prev.__default__ || DEFAULT_PATIENT_NOTIFICATION_PREFS), ...prefs }
+    }));
     showNotification('Preferencias de avisos y notificaciones guardadas', 'success');
   };
 
@@ -2003,6 +2066,15 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  // NOTA DE ALCANCE REAL, reiterada aquí porque el noveno módulo de la
+  // migración (preferencias push, ver más arriba y
+  // server/routes/preferencias.ts) depende directamente de esto: esta
+  // función sigue siendo el mecanismo LOCAL/INSEGURO anterior a la Etapa
+  // 3 -compara accessCode/pinCode/nationalId contra el arreglo completo
+  // de pacientes ya cargado en el navegador-, nunca llama a
+  // POST /api/portal/login (el login real y seguro que ya existe en
+  // server/routes/portal.ts). Migrar esta función al login real es un
+  // cambio de alcance propio, no de un módulo individual.
   const authenticatePatient = (codeOrDni: string, pin?: string): boolean => {
     const cleanInput = codeOrDni.trim().toLowerCase();
     const cleanPin = pin?.trim();
