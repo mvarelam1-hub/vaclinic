@@ -16,12 +16,22 @@ npm install
 cp .env.example .env.local   # completar DATABASE_URL, FIREBASE_ADMIN_CREDENTIALS_JSON, PORTAL_TOKEN_SECRET
 ```
 
-Aplicar las migraciones en orden contra una base PostgreSQL:
+Aplicar las migraciones contra una base PostgreSQL (con `DATABASE_URL` en el entorno):
 
 ```bash
-psql "$DATABASE_URL" -f db/migrations/0001_initial_schema.sql
-# ... 0002 a 0009, en orden
+npm run migrate          # aplica en orden solo las migraciones de db/migrations/ que falten
+npm run migrate:status   # muestra cuáles están aplicadas y cuáles pendientes, sin cambiar nada
+npm run migrate -- --seed   # SOLO desarrollo: además carga 0099 (datos ficticios); bloqueado si NODE_ENV=production
 ```
+
+El runner (`scripts/migrate.mjs`) registra cada migración aplicada en la tabla
+`schema_migrations`, es idempotente y **se ejecuta automáticamente en cada
+arranque con `npm start`** (así un despliegue en Render aplica por sí solo las
+migraciones nuevas, sin `psql` ni credenciales a mano). Si encuentra una base que
+ya tiene el esquema pero ninguna fila de registro (el caso de Neon, donde 0001–0009
+se aplicaron a mano antes de existir el runner), registra esas nueve como línea
+base sin re-ejecutarlas y continúa con las siguientes. `GET /api/health` reporta la
+última migración registrada, para verificar un despliegue sin acceso a la base.
 
 ## Ejecución
 
