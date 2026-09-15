@@ -12,6 +12,7 @@ import { transferenciasRouter } from './transferencias';
 import { perfilesRouter } from './perfiles';
 import { personalRouter } from './personal';
 import { rolesRouter } from './roles';
+import { reactivosRouter } from './reactivos';
 
 export const apiRouter = Router();
 
@@ -36,3 +37,4 @@ apiRouter.use('/transferencias', transferenciasRouter);
 apiRouter.use('/perfiles', perfilesRouter);
 apiRouter.use('/personal', personalRouter);
 apiRouter.use('/roles', rolesRouter);
+apiRouter.use('/reactivos', reactivosRouter);

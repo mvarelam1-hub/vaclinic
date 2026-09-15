@@ -114,6 +114,13 @@ import {
   actualizarPermisosRolRemoto,
   RolesApiError
 } from '../services/rolesApiService';
+import {
+  crearReactivoRemoto,
+  actualizarReactivoRemoto,
+  eliminarReactivoRemoto,
+  registrarMovimientoReactivoRemoto,
+  ReactivosApiError
+} from '../services/reactivosApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -298,15 +305,15 @@ interface ClinicContextType {
   criticalReagents: ReagentInventoryItem[];
   lowStockReagents: ReagentInventoryItem[];
   reagentsBelowMinThreshold: ReagentInventoryItem[];
-  addReagent: (item: Omit<ReagentInventoryItem, 'id' | 'updatedAt'>) => ReagentInventoryItem;
-  updateReagent: (id: string, updates: Partial<ReagentInventoryItem>) => void;
-  deleteReagent: (id: string) => void;
+  addReagent: (item: Omit<ReagentInventoryItem, 'id' | 'updatedAt'>) => Promise<ReagentInventoryItem>;
+  updateReagent: (id: string, updates: Partial<ReagentInventoryItem>) => Promise<void>;
+  deleteReagent: (id: string) => Promise<void>;
   registerReagentMovement: (
     reagentId: string,
     type: 'entrada' | 'salida_consumo' | 'ajuste' | 'baja_vencimiento',
     quantity: number,
     reason: string
-  ) => void;
+  ) => Promise<void>;
   quickRestockReagent: (reagentId: string, quantityToAdd?: number) => void;
   simulateReagentConsumption: (reagentId: string, quantityToConsume?: number) => void;
   restockAllCriticalReagents: () => void;
@@ -2884,12 +2891,32 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // REAGENTS INVENTORY & STOCK ALERTS METHODS
   // ==========================================
 
-  const addReagent = (itemData: Omit<ReagentInventoryItem, 'id' | 'updatedAt'>): ReagentInventoryItem => {
-    const newItem: ReagentInventoryItem = {
+  const addReagent = async (itemData: Omit<ReagentInventoryItem, 'id' | 'updatedAt'>): Promise<ReagentInventoryItem> => {
+    const draftItem: ReagentInventoryItem = {
       ...itemData,
       id: `rgt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 16)
     };
+
+    let newItem = draftItem;
+    if (isEffectiveOnline) {
+      try {
+        const creado = await crearReactivoRemoto({
+          code: draftItem.code, name: draftItem.name, category: draftItem.category,
+          associatedTests: draftItem.associatedTests, lotNumber: draftItem.lotNumber,
+          expirationDate: draftItem.expirationDate, currentStock: draftItem.currentStock,
+          minStockAlert: draftItem.minStockAlert, optimalStock: draftItem.optimalStock,
+          unit: draftItem.unit, storageCondition: draftItem.storageCondition,
+          supplier: draftItem.supplier, location: draftItem.location,
+          costPerUnit: draftItem.costPerUnit, testsPerUnit: draftItem.testsPerUnit, notes: draftItem.notes
+        });
+        newItem = { ...draftItem, id: `rgt-remote-${creado.id_reactivo}`, remoteId: creado.id_reactivo };
+      } catch (err) {
+        const mensaje = err instanceof ReactivosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear el reactivo en el servidor:', err);
+        showNotification(`No se pudo registrar el reactivo en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
 
     setReagents(prev => [newItem, ...prev]);
 
@@ -2919,7 +2946,23 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return newItem;
   };
 
-  const updateReagent = (id: string, updates: Partial<ReagentInventoryItem>) => {
+  const updateReagent = async (id: string, updates: Partial<ReagentInventoryItem>): Promise<void> => {
+    const target = reagents.find(r => r.id === id);
+    if (isEffectiveOnline && target?.remoteId) {
+      try {
+        await actualizarReactivoRemoto(target.remoteId, {
+          name: updates.name, category: updates.category, associatedTests: updates.associatedTests,
+          lotNumber: updates.lotNumber, expirationDate: updates.expirationDate,
+          minStockAlert: updates.minStockAlert, optimalStock: updates.optimalStock, unit: updates.unit,
+          storageCondition: updates.storageCondition, supplier: updates.supplier, location: updates.location,
+          costPerUnit: updates.costPerUnit, testsPerUnit: updates.testsPerUnit, notes: updates.notes
+        });
+      } catch (err) {
+        const mensaje = err instanceof ReactivosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar el reactivo en el servidor:', err);
+        showNotification(`No se pudo sincronizar el reactivo con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setReagents(prev => prev.map(item => {
       if (item.id === id) {
         const updated = {
@@ -2945,37 +2988,76 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }));
   };
 
-  const deleteReagent = (id: string) => {
+  const deleteReagent = async (id: string): Promise<void> => {
     const target = reagents.find(r => r.id === id);
+    if (isEffectiveOnline && target?.remoteId) {
+      try {
+        await eliminarReactivoRemoto(target.remoteId);
+      } catch (err) {
+        const mensaje = err instanceof ReactivosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo eliminar el reactivo en el servidor:', err);
+        showNotification(`No se pudo eliminar el reactivo en el servidor (${mensaje}). Se eliminó solo localmente.`, 'warning');
+      }
+    }
     setReagents(prev => prev.filter(r => r.id !== id));
     showNotification(`Reactivo "${target?.name || id}" eliminado del inventario`, 'info');
   };
 
-  const registerReagentMovement = (
-    reagentId: string,
+  // Misma lógica de cálculo que ya usaba registerReagentMovement antes de
+  // esta migración; se extrae aparte porque ahora también se necesita
+  // como respaldo local cuando falla la llamada remota (ver más abajo).
+  function calcularMovimientoLocal(
+    target: ReagentInventoryItem,
     type: 'entrada' | 'salida_consumo' | 'ajuste' | 'baja_vencimiento',
-    quantity: number,
-    reason: string
-  ) => {
-    const target = reagents.find(r => r.id === reagentId);
-    if (!target) return;
-
-    const previousStock = target.currentStock;
-    let newStock = previousStock;
-
+    quantity: number
+  ): { newStock: number; newStatus: ReagentInventoryItem['status'] } {
+    let newStock = target.currentStock;
     if (type === 'entrada') {
-      newStock = previousStock + quantity;
+      newStock = target.currentStock + quantity;
     } else if (type === 'salida_consumo' || type === 'baja_vencimiento') {
-      newStock = Math.max(0, previousStock - quantity);
+      newStock = Math.max(0, target.currentStock - quantity);
     } else if (type === 'ajuste') {
       newStock = quantity;
     }
-
     let newStatus: ReagentInventoryItem['status'] = 'optimo';
     if (newStock <= Math.floor(target.minStockAlert * 0.5)) {
       newStatus = 'critico';
     } else if (newStock <= target.minStockAlert) {
       newStatus = 'bajo_stock';
+    }
+    return { newStock, newStatus };
+  }
+
+  const registerReagentMovement = async (
+    reagentId: string,
+    type: 'entrada' | 'salida_consumo' | 'ajuste' | 'baja_vencimiento',
+    quantity: number,
+    reason: string
+  ): Promise<void> => {
+    const target = reagents.find(r => r.id === reagentId);
+    if (!target) return;
+
+    let previousStock = target.currentStock;
+    let newStock = previousStock;
+    let newStatus: ReagentInventoryItem['status'] = target.status;
+    let remoteMovementId: number | undefined;
+
+    if (isEffectiveOnline && target.remoteId) {
+      try {
+        const resultado = await registrarMovimientoReactivoRemoto(target.remoteId, type, quantity, reason);
+        previousStock = Number(resultado.movimiento.stock_anterior);
+        newStock = Number(resultado.movimiento.stock_nuevo);
+        newStatus = resultado.reactivo.estado as ReagentInventoryItem['status'];
+        remoteMovementId = resultado.movimiento.id_movimiento;
+      } catch (err) {
+        const mensaje = err instanceof ReactivosApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo registrar el movimiento en el servidor:', err);
+        showNotification(`No se pudo registrar el movimiento en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+        // Continúa abajo con el cálculo local, igual que el resto de módulos.
+        ({ newStock, newStatus } = calcularMovimientoLocal(target, type, quantity));
+      }
+    } else {
+      ({ newStock, newStatus } = calcularMovimientoLocal(target, type, quantity));
     }
 
     // Update reagent stock
@@ -2994,7 +3076,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     // Register movement log
     const newLog: ReagentMovementLog = {
-      id: `mov-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: remoteMovementId ? `mov-remote-${remoteMovementId}` : `mov-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       reagentId: target.id,
       reagentName: target.name,
       type,
@@ -3003,7 +3085,8 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       newStock,
       reason,
       operator: currentStaffUser?.name || 'Bioanalista en Turno',
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16)
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      remoteId: remoteMovementId
     };
 
     setReagentMovements(prev => [newLog, ...prev]);

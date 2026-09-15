@@ -19,6 +19,9 @@ export interface ReagentInventoryItem {
   notes?: string;
   lastRestockedAt?: string;
   updatedAt: string;
+  // Id real de reactivo (migración 0011) cuando se pudo crear de verdad
+  // en el backend; misma convención que los demás remoteId del proyecto.
+  remoteId?: number;
 }
 
 export interface ReagentMovementLog {
@@ -32,4 +35,5 @@ export interface ReagentMovementLog {
   reason: string; // e.g. "Consumo corrida matutina 50 pruebas", "Recepción lote nuevo", "Calibración y QC"
   operator: string;
   timestamp: string;
+  remoteId?: number;
 }
