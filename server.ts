@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { apiRouter } from "./server/routes/index";
+import { pool } from "./server/db";
 
 dotenv.config();
 
@@ -31,9 +32,39 @@ const getGenAI = () => {
   });
 };
 
-// Health Check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+// Health Check. Además del "ok" del proceso, reporta el estado REAL de la
+// base de datos: si responde y qué migración es la última registrada por
+// scripts/migrate.mjs (tabla schema_migrations). Sirve para verificar un
+// despliegue sin necesitar credenciales de la base (solo nombres de
+// migración, nunca datos ni la cadena de conexión). Si la base no responde,
+// el servicio sigue contestando (status "degraded") para que Render no lo
+// reinicie en bucle y el problema se vea en este mismo endpoint.
+app.get("/api/health", async (req, res) => {
+  const base: Record<string, unknown> = { status: "ok", timestamp: new Date().toISOString() };
+  try {
+    const { rows } = await pool.query(
+      "SELECT version, nombre, aplicada_en FROM schema_migrations ORDER BY version DESC LIMIT 1"
+    );
+    const { rows: total } = await pool.query("SELECT count(*)::int AS n FROM schema_migrations");
+    res.json({
+      ...base,
+      db: "ok",
+      migraciones: {
+        aplicadas: total[0]?.n ?? 0,
+        ultima: rows[0] ? { version: rows[0].version, nombre: rows[0].nombre, aplicada_en: rows[0].aplicada_en } : null
+      }
+    });
+  } catch (err: any) {
+    // 42P01 = la tabla schema_migrations aún no existe (el runner nunca ha
+    // corrido contra esta base); cualquier otro error = la base no responde.
+    const sinRunner = err?.code === "42P01";
+    res.status(sinRunner ? 200 : 503).json({
+      ...base,
+      status: sinRunner ? "ok" : "degraded",
+      db: sinRunner ? "ok" : "error",
+      migraciones: sinRunner ? { aplicadas: 0, ultima: null, nota: "schema_migrations no existe todavía" } : undefined
+    });
+  }
 });
 
 // In-memory token storage for active patient FCM tokens
