@@ -10,6 +10,8 @@ import { carpetasRouter } from './carpetas';
 import { episodiosRouter } from './episodios';
 import { transferenciasRouter } from './transferencias';
 import { perfilesRouter } from './perfiles';
+import { personalRouter } from './personal';
+import { rolesRouter } from './roles';
 
 export const apiRouter = Router();
 
@@ -32,3 +34,5 @@ apiRouter.use('/carpetas', carpetasRouter);
 apiRouter.use('/episodios', episodiosRouter);
 apiRouter.use('/transferencias', transferenciasRouter);
 apiRouter.use('/perfiles', perfilesRouter);
+apiRouter.use('/personal', personalRouter);
+apiRouter.use('/roles', rolesRouter);

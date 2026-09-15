@@ -606,6 +606,10 @@ export interface LabStaffUser {
   // StaffLoginView.tsx) — el control de acceso real siempre lo decide el
   // backend (server/auth-firebase.ts), nunca este campo por sí solo.
   firebaseUid?: string;
+  // Id real en la tabla `usuario` (la misma que ya usa la autenticación)
+  // cuando el usuario se pudo crear de verdad en el backend (migración
+  // 0011). Misma convención que los demás remoteId de este archivo.
+  remoteId?: number;
 }
 
 export interface StaffBiometricCredential {

@@ -102,6 +102,18 @@ import {
   eliminarPerfilRemoto,
   PerfilesApiError
 } from '../services/perfilesApiService';
+import {
+  crearPersonalRemoto,
+  actualizarPersonalRemoto,
+  cambiarEstadoPersonalRemoto,
+  reiniciarPinPersonalRemoto,
+  eliminarPersonalRemoto,
+  PersonalApiError
+} from '../services/personalApiService';
+import {
+  actualizarPermisosRolRemoto,
+  RolesApiError
+} from '../services/rolesApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -224,12 +236,12 @@ interface ClinicContextType {
   staffUsers: LabStaffUser[];
   staffRoles: LabRoleConfig[];
   auditLogs: LabAuditLog[];
-  addStaffUser: (userData: Omit<LabStaffUser, 'id' | 'createdAt'>) => LabStaffUser;
-  updateStaffUser: (id: string, updates: Partial<LabStaffUser>) => void;
-  deleteStaffUser: (id: string) => void;
-  toggleUserStatus: (id: string, newStatus: UserStatus) => void;
-  resetUserPin: (id: string, newPin: string) => void;
-  updateRolePermissions: (roleId: LabStaffRole, permissions: string[]) => void;
+  addStaffUser: (userData: Omit<LabStaffUser, 'id' | 'createdAt'>) => Promise<LabStaffUser>;
+  updateStaffUser: (id: string, updates: Partial<LabStaffUser>) => Promise<void>;
+  deleteStaffUser: (id: string) => Promise<void>;
+  toggleUserStatus: (id: string, newStatus: UserStatus) => Promise<void>;
+  resetUserPin: (id: string, newPin: string) => Promise<void>;
+  updateRolePermissions: (roleId: LabStaffRole, permissions: string[]) => Promise<void>;
   logAuditEvent: (log: Omit<LabAuditLog, 'id' | 'timestamp'>) => void;
   hasPermission: (user: LabStaffUser, permissionId: string) => boolean;
 
@@ -2155,15 +2167,34 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setAuditLogs(prev => [newLog, ...prev.slice(0, 199)]);
   };
 
-  const addStaffUser = (userData: Omit<LabStaffUser, 'id' | 'createdAt'>): LabStaffUser => {
+  const addStaffUser = async (userData: Omit<LabStaffUser, 'id' | 'createdAt'>): Promise<LabStaffUser> => {
     const roleObj = staffRoles.find(r => r.id === userData.roleId);
-    const newUser: LabStaffUser = {
+    const draftUser: LabStaffUser = {
       ...userData,
       id: `usr-${Date.now().toString().slice(-4)}`,
       roleName: roleObj ? roleObj.name : userData.roleName,
       createdAt: new Date().toISOString(),
       avatarColor: userData.avatarColor || 'bg-teal-600'
     };
+
+    let newUser = draftUser;
+    if (isEffectiveOnline) {
+      try {
+        const creado = await crearPersonalRemoto({
+          fullName: draftUser.fullName, username: draftUser.username, email: draftUser.email,
+          phone: draftUser.phone, roleId: draftUser.roleId, specialty: draftUser.specialty,
+          licenseNumber: draftUser.licenseNumber, assignedBranch: draftUser.assignedBranch,
+          pinCode: draftUser.pinCode, customPermissions: draftUser.customPermissions,
+          avatarColor: draftUser.avatarColor, notes: draftUser.notes
+        });
+        newUser = { ...draftUser, id: `usr-remote-${creado.id_usuario}`, remoteId: creado.id_usuario };
+      } catch (err) {
+        const mensaje = err instanceof PersonalApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear el usuario en el servidor:', err);
+        showNotification(`No se pudo registrar el usuario en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
+
     setStaffUsers(prev => [newUser, ...prev]);
     logAuditEvent({
       userId: 'usr-admin',
@@ -2178,7 +2209,24 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return newUser;
   };
 
-  const updateStaffUser = (id: string, updates: Partial<LabStaffUser>) => {
+  const updateStaffUser = async (id: string, updates: Partial<LabStaffUser>): Promise<void> => {
+    const user = staffUsers.find(u => u.id === id);
+    if (isEffectiveOnline && user?.remoteId) {
+      try {
+        await actualizarPersonalRemoto(user.remoteId, {
+          fullName: updates.fullName, username: updates.username, email: updates.email,
+          phone: updates.phone, roleId: updates.roleId, specialty: updates.specialty,
+          licenseNumber: updates.licenseNumber, assignedBranch: updates.assignedBranch,
+          customPermissions: updates.customPermissions, avatarColor: updates.avatarColor,
+          notes: updates.notes, signatureStampText: updates.signatureStampText,
+          signatureImageUrl: updates.signatureImageUrl, twoFactorEnabled: updates.twoFactorEnabled
+        });
+      } catch (err) {
+        const mensaje = err instanceof PersonalApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar el usuario en el servidor:', err);
+        showNotification(`No se pudo sincronizar el usuario con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setStaffUsers(prev =>
       prev.map(u => {
         if (u.id === id) {
@@ -2205,8 +2253,17 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification('Usuario actualizado correctamente', 'info');
   };
 
-  const deleteStaffUser = (id: string) => {
+  const deleteStaffUser = async (id: string): Promise<void> => {
     const userToDelete = staffUsers.find(u => u.id === id);
+    if (isEffectiveOnline && userToDelete?.remoteId) {
+      try {
+        await eliminarPersonalRemoto(userToDelete.remoteId);
+      } catch (err) {
+        const mensaje = err instanceof PersonalApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo eliminar el usuario en el servidor:', err);
+        showNotification(`No se pudo eliminar el usuario en el servidor (${mensaje}). Se eliminó solo localmente.`, 'warning');
+      }
+    }
     setStaffUsers(prev => prev.filter(u => u.id !== id));
     if (userToDelete) {
       logAuditEvent({
@@ -2222,11 +2279,20 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification('Usuario eliminado del sistema', 'warning');
   };
 
-  const toggleUserStatus = (id: string, newStatus: UserStatus) => {
+  const toggleUserStatus = async (id: string, newStatus: UserStatus): Promise<void> => {
+    const user = staffUsers.find(u => u.id === id);
+    if (isEffectiveOnline && user?.remoteId) {
+      try {
+        await cambiarEstadoPersonalRemoto(user.remoteId, newStatus);
+      } catch (err) {
+        const mensaje = err instanceof PersonalApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo cambiar el estado del usuario en el servidor:', err);
+        showNotification(`No se pudo sincronizar el estado con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setStaffUsers(prev =>
       prev.map(u => (u.id === id ? { ...u, status: newStatus } : u))
     );
-    const user = staffUsers.find(u => u.id === id);
     if (user) {
       logAuditEvent({
         userId: 'usr-admin',
@@ -2241,11 +2307,20 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification(`Estado de usuario actualizado a ${newStatus}`, 'info');
   };
 
-  const resetUserPin = (id: string, newPin: string) => {
+  const resetUserPin = async (id: string, newPin: string): Promise<void> => {
+    const user = staffUsers.find(u => u.id === id);
+    if (isEffectiveOnline && user?.remoteId) {
+      try {
+        await reiniciarPinPersonalRemoto(user.remoteId, newPin);
+      } catch (err) {
+        const mensaje = err instanceof PersonalApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo reiniciar el PIN en el servidor:', err);
+        showNotification(`No se pudo sincronizar el PIN con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setStaffUsers(prev =>
       prev.map(u => (u.id === id ? { ...u, pinCode: newPin } : u))
     );
-    const user = staffUsers.find(u => u.id === id);
     if (user) {
       logAuditEvent({
         userId: 'usr-admin',
@@ -2260,7 +2335,24 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification('PIN de acceso actualizado con éxito', 'success');
   };
 
-  const updateRolePermissions = (roleId: LabStaffRole, permissions: string[]) => {
+  /**
+   * Persiste de verdad en Postgres (tabla rol_permiso_default), pero -ver
+   * la nota de alcance al inicio de server/routes/roles.ts- todavía NO
+   * cambia la autorización real: hasPermission() sigue leyendo
+   * INITIAL_ROLES_CONFIG en memoria. El estado local `staffRoles` (lo que
+   * de verdad pinta la matriz y filtra botones en esta sesión del
+   * navegador) se sigue actualizando igual que antes de esta migración.
+   */
+  const updateRolePermissions = async (roleId: LabStaffRole, permissions: string[]): Promise<void> => {
+    if (isEffectiveOnline) {
+      try {
+        await actualizarPermisosRolRemoto(roleId, permissions);
+      } catch (err) {
+        const mensaje = err instanceof RolesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo guardar la matriz de permisos en el servidor:', err);
+        showNotification(`No se pudo guardar la matriz de permisos en el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setStaffRoles(prev =>
       prev.map(r => (r.id === roleId ? { ...r, defaultPermissions: permissions } : r))
     );
