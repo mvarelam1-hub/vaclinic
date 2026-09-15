@@ -13,6 +13,7 @@ import { perfilesRouter } from './perfiles';
 import { personalRouter } from './personal';
 import { rolesRouter } from './roles';
 import { reactivosRouter } from './reactivos';
+import { plantillasRouter } from './plantillas';
 
 export const apiRouter = Router();
 
@@ -38,3 +39,4 @@ apiRouter.use('/perfiles', perfilesRouter);
 apiRouter.use('/personal', personalRouter);
 apiRouter.use('/roles', rolesRouter);
 apiRouter.use('/reactivos', reactivosRouter);
+apiRouter.use('/plantillas', plantillasRouter);

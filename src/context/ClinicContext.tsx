@@ -121,6 +121,11 @@ import {
   registrarMovimientoReactivoRemoto,
   ReactivosApiError
 } from '../services/reactivosApiService';
+import {
+  guardarPlantillaRemota,
+  actualizarPlantillaRemota,
+  PlantillasApiError
+} from '../services/plantillasApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -158,8 +163,8 @@ interface ClinicContextType {
   patients: Patient[];
   reports: MedicalReport[];
   templates: ReportTemplate[];
-  addTemplate: (template: ReportTemplate) => void;
-  updateTemplate: (id: string, updates: Partial<ReportTemplate>) => void;
+  addTemplate: (template: ReportTemplate) => Promise<void>;
+  updateTemplate: (id: string, updates: Partial<ReportTemplate>) => Promise<void>;
   resetTemplatesToFactory: () => void;
   branches: BranchSite[];
   isMultiBranchEnabled: boolean;
@@ -837,18 +842,48 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return INITIAL_TEMPLATES;
   });
 
-  const addTemplate = (template: ReportTemplate) => {
-    setTemplates(prev => {
-      const exists = prev.some(t => t.id === template.id);
-      if (exists) {
-        return prev.map(t => t.id === template.id ? template : t);
+  const addTemplate = async (template: ReportTemplate): Promise<void> => {
+    let finalTemplate = template;
+    if (isEffectiveOnline) {
+      try {
+        await guardarPlantillaRemota(template);
+        finalTemplate = { ...template, remoteId: template.id };
+      } catch (err) {
+        const mensaje = err instanceof PlantillasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo guardar la plantilla en el servidor:', err);
+        showNotification(`No se pudo guardar la plantilla en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
       }
-      return [template, ...prev];
+    }
+    setTemplates(prev => {
+      const exists = prev.some(t => t.id === finalTemplate.id);
+      if (exists) {
+        return prev.map(t => t.id === finalTemplate.id ? finalTemplate : t);
+      }
+      return [finalTemplate, ...prev];
     });
-    showNotification(`Plantilla "${template.name}" guardada en la biblioteca`, 'success');
+    showNotification(`Plantilla "${finalTemplate.name}" guardada en la biblioteca`, 'success');
   };
 
-  const updateTemplate = (id: string, updates: Partial<ReportTemplate>) => {
+  /**
+   * Solo intenta sincronizar contra el backend si la plantilla YA tiene
+   * remoteId (es decir, ya pasó por addTemplate() con conexión). Las
+   * plantillas de fábrica (INITIAL_TEMPLATES) nunca se crearon vía la
+   * API, así que editarlas sigue siendo puramente local -igual que ya
+   * ocurre con updateCustomProfile()/updateReagent() sobre ítems de
+   * fábrica en los módulos anteriores- en vez de mostrar una advertencia
+   * de sincronización sobre algo que nunca existió en el servidor.
+   */
+  const updateTemplate = async (id: string, updates: Partial<ReportTemplate>): Promise<void> => {
+    const template = templates.find(t => t.id === id);
+    if (isEffectiveOnline && template?.remoteId) {
+      try {
+        await actualizarPlantillaRemota(template.remoteId, updates);
+      } catch (err) {
+        const mensaje = err instanceof PlantillasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar la plantilla en el servidor:', err);
+        showNotification(`No se pudo sincronizar la plantilla con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setTemplates(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
     showNotification('Plantilla clínica actualizada con éxito', 'success');
   };

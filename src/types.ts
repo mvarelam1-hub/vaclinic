@@ -307,6 +307,13 @@ export interface ReportTemplate {
   complianceStandard?: string;
   complianceScore?: number;
   lastAuditedAt?: string;
+  // Marca que esta plantilla ya se guardó de verdad en el backend
+  // (tabla plantilla_informe, migración 0011) bajo este mismo id -aquí
+  // no hace falta un id remoto distinto porque id_plantilla es TEXT y lo
+  // genera el propio frontend-. Las plantillas de fábrica
+  // (INITIAL_TEMPLATES) nunca pasan por la API, así que no tienen esta
+  // marca hasta que alguien las edite por primera vez estando en línea.
+  remoteId?: string;
 }
 
 export interface ParameterTubeAuditItem {
