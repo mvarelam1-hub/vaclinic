@@ -683,6 +683,11 @@ export interface OrderFolder {
   isSystem?: boolean;
   orderCount?: number;
   createdAt: string;
+  // Id real de carpeta_orden (migración 0011) cuando esta carpeta existe de
+  // verdad en el backend -la carpeta de sistema "folder-unassigned" siempre
+  // lo tiene (remoteId: 1, sembrado por esa migración); una carpeta creada
+  // solo local (servidor caído) queda sin este campo.
+  remoteId?: number;
 }
 
 export interface LabOrder {

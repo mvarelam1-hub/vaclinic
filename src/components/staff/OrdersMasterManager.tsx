@@ -434,18 +434,18 @@ export const OrdersMasterManager: React.FC<OrdersMasterManagerProps> = ({ mode }
     setIsMoveModalOpen(true);
   };
 
-  const handleConfirmMoveToFolder = () => {
+  const handleConfirmMoveToFolder = async () => {
     if (!selectedTargetFolderId || targetOrderIdsToMove.length === 0) return;
-    bulkMoveOrdersToFolder(targetOrderIdsToMove, selectedTargetFolderId);
+    await bulkMoveOrdersToFolder(targetOrderIdsToMove, selectedTargetFolderId);
     setIsMoveModalOpen(false);
     setSelectedOrderIds([]);
   };
 
   // Create new folder submit
-  const handleCreateFolderSubmit = (e: React.FormEvent) => {
+  const handleCreateFolderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFolderName.trim()) return;
-    const created = createOrderFolder(newFolderName, newFolderColor, newFolderDescription);
+    const created = await createOrderFolder(newFolderName, newFolderColor, newFolderDescription);
     setIsCreateFolderModalOpen(false);
     setNewFolderName('');
     setNewFolderDescription('');

@@ -77,6 +77,14 @@ import {
   publicarResultadoRemoto,
   ResultadosApiError
 } from '../services/resultadosApiService';
+import {
+  crearCarpetaRemota,
+  actualizarCarpetaRemota,
+  eliminarCarpetaRemota,
+  moverOrdenACarpetaRemota,
+  moverVariasOrdenesACarpetaRemota,
+  CarpetasApiError
+} from '../services/carpetasApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -249,11 +257,11 @@ interface ClinicContextType {
   bulkArchiveOrders: (ids: string[]) => void;
   bulkRestoreOrders: (ids: string[]) => void;
   bulkDeleteOrders: (ids: string[]) => void;
-  moveOrderToFolder: (orderId: string, folderId: string) => void;
-  bulkMoveOrdersToFolder: (orderIds: string[], folderId: string) => void;
-  createOrderFolder: (name: string, color: string, description?: string) => OrderFolder;
-  updateOrderFolder: (folderId: string, updates: Partial<OrderFolder>) => void;
-  deleteOrderFolder: (folderId: string) => void;
+  moveOrderToFolder: (orderId: string, folderId: string) => Promise<void>;
+  bulkMoveOrdersToFolder: (orderIds: string[], folderId: string) => Promise<void>;
+  createOrderFolder: (name: string, color: string, description?: string) => Promise<OrderFolder>;
+  updateOrderFolder: (folderId: string, updates: Partial<OrderFolder>) => Promise<void>;
+  deleteOrderFolder: (folderId: string) => Promise<void>;
 
   // Reagents & Consumables Inventory Management & Continuous Monitoring
   reagents: ReagentInventoryItem[];
@@ -2480,37 +2488,59 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification(`${ids.length} orden(es) eliminadas`, 'info');
   };
 
-  const moveOrderToFolder = (orderId: string, folderId: string) => {
+  // Las 5 funciones de carpetas siguen el mismo patrón de resiliencia que
+  // pacientes/órdenes/resultados: si la orden/carpeta involucrada tiene un
+  // id real (remoteId), se intenta sincronizar contra
+  // server/routes/carpetas.ts (migración 0011); si algo falla -o no hay id
+  // real todavía-, se sigue aplicando el cambio local exactamente como
+  // antes, con una notificación honesta en vez de fingir éxito.
+
+  const moveOrderToFolder = async (orderId: string, folderId: string): Promise<void> => {
     const targetFolder = orderFolders.find(f => f.id === folderId);
-    setOrders(prev => prev.map(o => {
-      if (o.id === orderId) {
-        return {
-          ...o,
-          folderId: folderId === 'folder-all' ? 'folder-unassigned' : folderId
-        };
+    const finalFolderId = folderId === 'folder-all' ? 'folder-unassigned' : folderId;
+    const finalTargetFolder = orderFolders.find(f => f.id === finalFolderId) || targetFolder;
+
+    const order = orders.find(o => o.id === orderId);
+    if (isEffectiveOnline && order?.remoteId && finalTargetFolder?.remoteId) {
+      try {
+        await moverOrdenACarpetaRemota(order.remoteId, finalTargetFolder.remoteId);
+      } catch (err) {
+        const mensaje = err instanceof CarpetasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo mover la orden de carpeta en el servidor:', err);
+        showNotification(`No se pudo sincronizar el cambio de carpeta con el servidor (${mensaje}). Se aplicó solo localmente.`, 'warning');
       }
-      return o;
-    }));
+    }
+
+    setOrders(prev => prev.map(o => (o.id === orderId ? { ...o, folderId: finalFolderId } : o)));
     showNotification(`Orden guardada en "${targetFolder?.name || 'Carpeta'}"`, 'success');
   };
 
-  const bulkMoveOrdersToFolder = (orderIds: string[], folderId: string) => {
+  const bulkMoveOrdersToFolder = async (orderIds: string[], folderId: string): Promise<void> => {
     const targetFolder = orderFolders.find(f => f.id === folderId);
     const finalFolderId = folderId === 'folder-all' ? 'folder-unassigned' : folderId;
-    setOrders(prev => prev.map(o => {
-      if (orderIds.includes(o.id)) {
-        return {
-          ...o,
-          folderId: finalFolderId
-        };
+    const finalTargetFolder = orderFolders.find(f => f.id === finalFolderId) || targetFolder;
+
+    if (isEffectiveOnline && finalTargetFolder?.remoteId) {
+      const idsRemotos = orders
+        .filter(o => orderIds.includes(o.id) && o.remoteId)
+        .map(o => o.remoteId!) as number[];
+      if (idsRemotos.length > 0) {
+        try {
+          await moverVariasOrdenesACarpetaRemota(idsRemotos, finalTargetFolder.remoteId);
+        } catch (err) {
+          const mensaje = err instanceof CarpetasApiError ? err.message : 'Error de red desconocido.';
+          console.error('[ClinicContext] No se pudo mover varias órdenes de carpeta en el servidor:', err);
+          showNotification(`No se pudo sincronizar el movimiento masivo con el servidor (${mensaje}). Se aplicó solo localmente.`, 'warning');
+        }
       }
-      return o;
-    }));
+    }
+
+    setOrders(prev => prev.map(o => (orderIds.includes(o.id) ? { ...o, folderId: finalFolderId } : o)));
     showNotification(`${orderIds.length} orden(es) organizadas en "${targetFolder?.name || 'Carpeta'}"`, 'success');
   };
 
-  const createOrderFolder = (name: string, color: string, description?: string): OrderFolder => {
-    const newFolder: OrderFolder = {
+  const createOrderFolder = async (name: string, color: string, description?: string): Promise<OrderFolder> => {
+    const draftFolder: OrderFolder = {
       id: `folder-custom-${Date.now()}`,
       name: name.trim(),
       color: color || 'teal',
@@ -2520,21 +2550,58 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       createdAt: new Date().toISOString()
     };
 
+    let newFolder = draftFolder;
+    if (isEffectiveOnline) {
+      try {
+        const creada = await crearCarpetaRemota(draftFolder.name, draftFolder.color, draftFolder.icon, draftFolder.description);
+        newFolder = { ...draftFolder, id: `folder-remote-${creada.id_carpeta}`, remoteId: creada.id_carpeta };
+      } catch (err) {
+        const mensaje = err instanceof CarpetasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear la carpeta en el servidor:', err);
+        showNotification(`No se pudo registrar la carpeta en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
+
     setOrderFolders(prev => [...prev, newFolder]);
     showNotification(`Carpeta "${newFolder.name}" creada exitosamente`, 'success');
     return newFolder;
   };
 
-  const updateOrderFolder = (folderId: string, updates: Partial<OrderFolder>) => {
+  const updateOrderFolder = async (folderId: string, updates: Partial<OrderFolder>): Promise<void> => {
+    const folder = orderFolders.find(f => f.id === folderId);
+    if (isEffectiveOnline && folder?.remoteId) {
+      try {
+        await actualizarCarpetaRemota(folder.remoteId, {
+          nombre: updates.name,
+          color: updates.color,
+          icono: updates.icon,
+          descripcion: updates.description
+        });
+      } catch (err) {
+        const mensaje = err instanceof CarpetasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar la carpeta en el servidor:', err);
+        showNotification(`No se pudo sincronizar la carpeta con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setOrderFolders(prev => prev.map(f => f.id === folderId ? { ...f, ...updates } : f));
     showNotification('Carpeta actualizada', 'success');
   };
 
-  const deleteOrderFolder = (folderId: string) => {
+  const deleteOrderFolder = async (folderId: string): Promise<void> => {
     const folderToDelete = orderFolders.find(f => f.id === folderId);
     if (folderToDelete?.isSystem) {
       showNotification('Las carpetas del sistema no pueden eliminarse', 'warning');
       return;
+    }
+
+    if (isEffectiveOnline && folderToDelete?.remoteId) {
+      try {
+        await eliminarCarpetaRemota(folderToDelete.remoteId);
+      } catch (err) {
+        const mensaje = err instanceof CarpetasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo eliminar la carpeta en el servidor:', err);
+        showNotification(`No se pudo eliminar la carpeta en el servidor (${mensaje}). Se eliminó solo localmente.`, 'warning');
+      }
     }
 
     // Move associated orders to unassigned

@@ -6,6 +6,7 @@ import { ordenesRouter } from './ordenes';
 import { resultadosRouter } from './resultados';
 import { auditoriaRouter } from './auditoria';
 import { examenesRouter } from './examenes';
+import { carpetasRouter } from './carpetas';
 
 export const apiRouter = Router();
 
@@ -24,3 +25,4 @@ apiRouter.use('/ordenes', ordenesRouter);
 apiRouter.use('/resultados', resultadosRouter);
 apiRouter.use('/auditoria', auditoriaRouter);
 apiRouter.use('/examenes', examenesRouter);
+apiRouter.use('/carpetas', carpetasRouter);

@@ -17,7 +17,12 @@ export const INITIAL_ORDER_FOLDERS: OrderFolder[] = [
     icon: 'Inbox',
     description: 'Órdenes recién recibidas pendientes de clasificar en carpetas',
     isSystem: true,
-    createdAt: '2026-01-01T00:00:00.000Z'
+    createdAt: '2026-01-01T00:00:00.000Z',
+    // Coincide con la fila sembrada por la migración 0011 (id_carpeta = 1,
+    // "Sin asignar") — es la única carpeta de sistema con contraparte real
+    // en el backend, porque es el destino real al que las rutas
+    // /api/carpetas mueven las órdenes al eliminar una carpeta.
+    remoteId: 1
   },
   {
     id: 'folder-empresas',
