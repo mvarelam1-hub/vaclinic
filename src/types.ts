@@ -99,6 +99,10 @@ export interface SampleTransferManifest {
   temperatureLogged: number; // e.g. 4.2 °C
   samplesCount: number;
   samplesCodes: string[];
+  // Id real de transferencia_muestra (migración 0011) cuando el manifiesto
+  // se pudo crear de verdad en el backend; igual convención que
+  // LabOrder.remoteId / LabEpisode.remoteId.
+  remoteId?: number;
 }
 
 export interface ReportParameter {

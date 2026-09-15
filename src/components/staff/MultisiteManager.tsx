@@ -42,14 +42,14 @@ export const MultisiteManager: React.FC = () => {
   const [tempLogged, setTempLogged] = useState<number>(4.1);
   const [samplesCount, setSamplesCount] = useState<number>(14);
 
-  const handleCreateTransfer = (e: React.FormEvent) => {
+  const handleCreateTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (originBranch === destinationBranch) {
       showNotification('La sede de origen y destino no pueden ser la misma', 'error');
       return;
     }
 
-    addSampleTransfer({
+    await addSampleTransfer({
       originBranch,
       destinationBranch,
       courierName,

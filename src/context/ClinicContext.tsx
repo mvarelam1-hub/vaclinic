@@ -92,6 +92,10 @@ import {
   resolverDuplicidadRemota,
   EpisodiosApiError
 } from '../services/episodiosApiService';
+import {
+  crearTransferenciaRemota,
+  TransferenciasApiError
+} from '../services/transferenciasApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -149,7 +153,7 @@ interface ClinicContextType {
   updateEpisode: (id: string, updates: Partial<LabEpisode>) => Promise<void>;
   advanceEpisodeDimension: (id: string, nextDimension: DimensionStage) => Promise<void>;
   resolveDuplicity: (id: string, action: 'keep' | 'cancel' | 'merge') => Promise<void>;
-  addSampleTransfer: (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>) => void;
+  addSampleTransfer: (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>) => Promise<SampleTransferManifest>;
   addReport: (report: Omit<MedicalReport, 'id' | 'reportNumber' | 'qrVerificationCode'>) => Promise<MedicalReport>;
   updateReport: (id: string, updates: Partial<MedicalReport>) => Promise<void>;
   deleteReport: (id: string) => void;
@@ -1609,15 +1613,45 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const addSampleTransfer = (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>) => {
+  const addSampleTransfer = async (transferData: Omit<SampleTransferManifest, 'id' | 'manifestCode'>): Promise<SampleTransferManifest> => {
     const manCode = `MAN-4D-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
-    const newManifest: SampleTransferManifest = {
+    const draftManifest: SampleTransferManifest = {
       ...transferData,
       id: `trans-${Date.now()}`,
       manifestCode: manCode
     };
+
+    let newManifest = draftManifest;
+    if (isEffectiveOnline) {
+      try {
+        const creado = await crearTransferenciaRemota({
+          originBranch: transferData.originBranch,
+          destinationBranch: transferData.destinationBranch,
+          courierName: transferData.courierName,
+          departureTime: transferData.departureTime,
+          estimatedArrivalTime: transferData.estimatedArrivalTime,
+          status: transferData.status,
+          temperatureControl: transferData.temperatureControl,
+          temperatureLogged: transferData.temperatureLogged,
+          samplesCount: transferData.samplesCount,
+          samplesCodes: transferData.samplesCodes
+        });
+        newManifest = {
+          ...draftManifest,
+          id: `trans-remote-${creado.id_transferencia}`,
+          manifestCode: creado.codigo_manifiesto,
+          remoteId: creado.id_transferencia
+        };
+      } catch (err) {
+        const mensaje = err instanceof TransferenciasApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo registrar la transferencia en el servidor:', err);
+        showNotification(`No se pudo registrar la remesa en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
+
     setTransfers((prev) => [newManifest, ...prev]);
-    showNotification(`Remesa ${manCode} despachada a sede receptora`, 'success');
+    showNotification(`Remesa ${newManifest.manifestCode} despachada a sede receptora`, 'success');
+    return newManifest;
   };
 
   /**
