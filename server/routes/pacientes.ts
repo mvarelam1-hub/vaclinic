@@ -35,3 +35,73 @@ pacientesRouter.post('/', requirePermission('admision_pacientes'), asyncHandler(
     return res.status(400).json({ error: err.message });
   }
 }));
+
+// Listado / búsqueda de pacientes (para la pantalla de "Nueva orden" y el
+// historial). ?buscar= filtra por nombre o DNI con ILIKE.
+pacientesRouter.get('/', requirePermission('admision_pacientes'), asyncHandler(async (req, res) => {
+  const buscar = String(req.query.buscar || '').trim();
+  const limite = Math.min(Number(req.query.limite) || 50, 200);
+  if (buscar) {
+    const { rows } = await pool.query(
+      `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp
+       FROM paciente
+       WHERE nombre_completo ILIKE $1 OR dni ILIKE $1
+       ORDER BY nombre_completo
+       LIMIT $2`,
+      [`%${buscar}%`, limite]
+    );
+    return res.json(rows);
+  }
+  const { rows } = await pool.query(
+    `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp
+     FROM paciente ORDER BY id_paciente DESC LIMIT $1`,
+    [limite]
+  );
+  return res.json(rows);
+}));
+
+pacientesRouter.get('/:id', requirePermission('admision_pacientes'), asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM paciente WHERE id_paciente = $1', [Number(req.params.id)]);
+  if (rows.length === 0) return res.status(404).json({ error: 'Paciente no encontrado.' });
+  return res.json(rows[0]);
+}));
+
+// Mapeo explícito columna_bd -> claveBody, en vez de derivarlo con una
+// regex snake_case -> camelCase: "telefono_whatsapp" se escribe
+// "telefonoWhatsApp" (con A mayúscula, por "WhatsApp") en el resto de la
+// API -por ejemplo en el POST de arriba-, y una conversión automática
+// ingenua produce "telefonoWhatsapp", que nunca coincide con lo que
+// realmente envía el cliente. Un mapeo explícito no depende de que la
+// ortografía de cada nombre seguía la misma regla mecánica.
+const CAMPOS_PACIENTE_PATCH: Record<string, string> = {
+  nombre_completo: 'nombreCompleto',
+  dni: 'dni',
+  fecha_nacimiento: 'fechaNacimiento',
+  genero: 'genero',
+  telefono_whatsapp: 'telefonoWhatsApp',
+  es_menor_edad: 'esMenorEdad',
+  nombre_encargado_legal: 'nombreEncargadoLegal',
+  telefono_encargado_legal: 'telefonoEncargadoLegal',
+};
+
+pacientesRouter.patch('/:id', requirePermission('admision_pacientes'), asyncHandler(async (req, res) => {
+  const idPaciente = Number(req.params.id);
+  const campos: Record<string, any> = {};
+  for (const [columna, clave] of Object.entries(CAMPOS_PACIENTE_PATCH)) {
+    if (req.body?.[clave] !== undefined) campos[columna] = req.body[clave];
+  }
+  if (Object.keys(campos).length === 0) {
+    return res.status(400).json({ error: 'No se envió ningún campo válido para actualizar.' });
+  }
+  const asignaciones = Object.keys(campos).map((c, i) => `${c} = $${i + 2}`).join(', ');
+  try {
+    const { rows } = await pool.query(
+      `UPDATE paciente SET ${asignaciones} WHERE id_paciente = $1 RETURNING *`,
+      [idPaciente, ...Object.values(campos)]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Paciente no encontrado.' });
+    return res.json(rows[0]);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+}));

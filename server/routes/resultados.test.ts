@@ -52,6 +52,53 @@ beforeEach(() => {
   currentStaffUser = { idUsuario: 1, roleId: 'bioanalista_senior', status: 'activo', nombreCompleto: 'Bioanalista Senior Demo' };
 });
 
+describe('POST /api/resultados (captura inicial)', () => {
+  it('rechaza con 400 si falta idDetalle o valorCapturado', async () => {
+    currentStaffUser.roleId = 'bioanalista'; // tiene analizadores_manual
+    const app = await buildApp();
+    const res = await request(app).post('/api/resultados').send({ idDetalle: 1 });
+    expect(res.status).toBe(400);
+  });
+
+  it('rechaza con 403 si el rol no tiene analizadores_manual', async () => {
+    currentStaffUser.roleId = 'recepcionista';
+    const app = await buildApp();
+    const res = await request(app).post('/api/resultados').send({ idDetalle: 1, valorCapturado: '90' });
+    expect(res.status).toBe(403);
+  });
+
+  it('rechaza con 409 si el detalle_orden ya tiene un resultado capturado', async () => {
+    currentStaffUser.roleId = 'bioanalista';
+    selectQueryMock.mockResolvedValueOnce({ rows: [{ id_resultado: 1 }] }); // ya existe
+    const app = await buildApp();
+    const res = await request(app).post('/api/resultados').send({ idDetalle: 1, valorCapturado: '90' });
+    expect(res.status).toBe(409);
+  });
+
+  it('crea el resultado en Borrador y marca esta_fuera_de_rango cuando el valor excede el rango del paciente', async () => {
+    currentStaffUser.roleId = 'bioanalista';
+    selectQueryMock
+      .mockResolvedValueOnce({ rows: [] }) // no existe resultado previo
+      .mockResolvedValueOnce({ rows: [{ id_examen: 7, fecha_nacimiento: '1990-01-01', genero: 'F' }] }) // detalle_orden
+      .mockResolvedValueOnce({ rows: [{ valor_minimo: '70', valor_maximo: '100' }] }) // rango_referencia
+      .mockResolvedValueOnce({ rows: [{ id_resultado: 55, id_detalle: 1, valor_capturado: '150', estado: 'Borrador', esta_fuera_de_rango: true }] }); // insert
+    const app = await buildApp();
+    const res = await request(app).post('/api/resultados').send({ idDetalle: 1, valorCapturado: '150' });
+    expect(res.status).toBe(201);
+    expect(res.body.esta_fuera_de_rango).toBe(true);
+  });
+
+  it('devuelve 404 si el detalle_orden no existe', async () => {
+    currentStaffUser.roleId = 'bioanalista';
+    selectQueryMock
+      .mockResolvedValueOnce({ rows: [] }) // no existe resultado previo
+      .mockResolvedValueOnce({ rows: [] }); // detalle_orden no encontrado
+    const app = await buildApp();
+    const res = await request(app).post('/api/resultados').send({ idDetalle: 999, valorCapturado: '90' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('PATCH /api/resultados/:id/validar (transición de estados)', () => {
   it('Borrador -> Validado es una transición válida (CP-30)', async () => {
     estadoActual = 'Borrador';

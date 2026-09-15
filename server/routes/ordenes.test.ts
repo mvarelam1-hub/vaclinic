@@ -134,6 +134,46 @@ describe('POST /api/ordenes (partición de equivalencia)', () => {
   });
 });
 
+describe('GET /api/ordenes (listado) y GET /api/ordenes/:id (detalle)', () => {
+  it('lista órdenes recientes con el nombre del paciente ya resuelto (JOIN)', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [{ id_orden: 1, numero_orden: 'ORD-1', paciente_nombre: 'María López' }] });
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes');
+    expect(res.status).toBe(200);
+    expect(res.body[0].paciente_nombre).toBe('María López');
+  });
+
+  it('GET /:id devuelve 404 si la orden no existe', async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] });
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes/999');
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /:id devuelve la orden con su detalle (exámenes + resultado si existe)', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [{ id_orden: 1, numero_orden: 'ORD-1', paciente_nombre: 'María López' }] })
+      .mockResolvedValueOnce({ rows: [{ id_detalle: 10, nombre_examen: 'Glucosa', estado_resultado: null }] });
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes/1');
+    expect(res.status).toBe(200);
+    expect(res.body.detalle).toHaveLength(1);
+    expect(res.body.detalle[0].nombre_examen).toBe('Glucosa');
+  });
+
+  it('"pendientes-validacion" y "resultados-criticos" no son interceptadas por la ruta genérica /:id', async () => {
+    // Esta prueba existe porque invertir el orden de registro de rutas en
+    // Express haría que "/:id" capturara "pendientes-validacion" como un id
+    // literal — ver el comentario en ordenes.ts.
+    currentStaffUser = { idUsuario: 3, roleId: 'bioanalista', status: 'activo', nombreCompleto: 'Bioanalista Demo' };
+    queryMock.mockResolvedValueOnce({ rows: [{ id_orden: 5 }] });
+    const app = await buildApp();
+    const res = await request(app).get('/api/ordenes/pendientes-validacion');
+    expect(res.status).toBe(200);
+    expect(queryMock.mock.calls[0][0]).toMatch(/vw_ordenes_pendientes_validacion/);
+  });
+});
+
 describe('GET /api/ordenes/pendientes-validacion y /resultados-criticos', () => {
   it('devuelve las filas de vw_ordenes_pendientes_validacion para un rol autorizado', async () => {
     currentStaffUser = { idUsuario: 3, roleId: 'bioanalista', status: 'activo', nombreCompleto: 'Bioanalista Demo' };
