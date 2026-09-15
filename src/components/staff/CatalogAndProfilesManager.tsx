@@ -167,7 +167,7 @@ export const CatalogAndProfilesManager: React.FC = () => {
   };
 
   // Handle create/update profile
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileBuilderForm.name.trim() || profileBuilderForm.selectedTestIds.length === 0) {
       showNotification('Ingrese el nombre y seleccione al menos una prueba para el perfil', 'warning');
@@ -200,7 +200,7 @@ export const CatalogAndProfilesManager: React.FC = () => {
         tests: updatedTests
       };
 
-      updateCustomProfile(editingProfile.id, updatedProfile);
+      await updateCustomProfile(editingProfile.id, updatedProfile);
       if (activeDrilldownProfile?.id === editingProfile.id) {
         setActiveDrilldownProfile(updatedProfile);
       }
@@ -211,7 +211,7 @@ export const CatalogAndProfilesManager: React.FC = () => {
         return cat ? buildProfileTestFromCatalog(cat) : { id: `ptest-${Date.now()}`, name: testId };
       });
 
-      const newProfile = addCustomProfile({
+      const newProfile = await addCustomProfile({
         name: profileBuilderForm.name,
         code: profileBuilderForm.code || `PRF-${Date.now().toString().slice(-4)}`,
         categoryName: 'Perfiles Clínicos Personalizados',

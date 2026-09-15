@@ -96,6 +96,12 @@ import {
   crearTransferenciaRemota,
   TransferenciasApiError
 } from '../services/transferenciasApiService';
+import {
+  crearPerfilRemoto,
+  actualizarPerfilRemoto,
+  eliminarPerfilRemoto,
+  PerfilesApiError
+} from '../services/perfilesApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -203,9 +209,9 @@ interface ClinicContextType {
   updateCatalogTest: (id: string, updates: Partial<LabCatalogItem>) => void;
   bulkUpdateCatalogTests: (updatedTests: LabCatalogItem[]) => void;
   deleteCatalogTest: (id: string) => void;
-  addCustomProfile: (profile: Omit<LabCustomProfile, 'id' | 'createdAt'>) => LabCustomProfile;
-  updateCustomProfile: (id: string, updates: Partial<LabCustomProfile>) => void;
-  deleteCustomProfile: (id: string) => void;
+  addCustomProfile: (profile: Omit<LabCustomProfile, 'id' | 'createdAt'>) => Promise<LabCustomProfile>;
+  updateCustomProfile: (id: string, updates: Partial<LabCustomProfile>) => Promise<void>;
+  deleteCustomProfile: (id: string) => Promise<void>;
   resetCatalogToFactory: () => void;
   exportCatalogJson: () => string;
   importCatalogJson: (jsonData: string) => { success: boolean; message: string; count?: number };
@@ -2008,19 +2014,68 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   // Lab Custom Profiles Methods
-  const addCustomProfile = (profileData: Omit<LabCustomProfile, 'id' | 'createdAt'>): LabCustomProfile => {
-    const newProfile: LabCustomProfile = {
+  const addCustomProfile = async (profileData: Omit<LabCustomProfile, 'id' | 'createdAt'>): Promise<LabCustomProfile> => {
+    const draftProfile: LabCustomProfile = {
       ...profileData,
       id: `prof-${Date.now()}`,
       createdAt: new Date().toISOString(),
       priceFormatted: `Q${profileData.price}`
     };
+
+    let newProfile = draftProfile;
+    if (isEffectiveOnline) {
+      try {
+        const creado = await crearPerfilRemoto({
+          code: draftProfile.code,
+          name: draftProfile.name,
+          categoryName: draftProfile.categoryName,
+          price: draftProfile.price,
+          regularPrice: draftProfile.regularPrice,
+          description: draftProfile.description,
+          testIds: draftProfile.testIds,
+          testNames: draftProfile.testNames,
+          tests: draftProfile.tests,
+          status: draftProfile.status,
+          basedOn: draftProfile.basedOn,
+          createdBy: draftProfile.createdBy,
+          notes: draftProfile.notes
+        });
+        newProfile = { ...draftProfile, id: `prof-remote-${creado.id_perfil}`, remoteId: creado.id_perfil };
+      } catch (err) {
+        const mensaje = err instanceof PerfilesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear el perfil en el servidor:', err);
+        showNotification(`No se pudo registrar el perfil en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+      }
+    }
+
     setCustomProfiles(prev => [newProfile, ...prev]);
     showNotification(`Perfil clínico "${newProfile.name}" guardado exitosamente`, 'success');
     return newProfile;
   };
 
-  const updateCustomProfile = (id: string, updates: Partial<LabCustomProfile>) => {
+  const updateCustomProfile = async (id: string, updates: Partial<LabCustomProfile>): Promise<void> => {
+    const profile = customProfiles.find(p => p.id === id);
+    if (isEffectiveOnline && profile?.remoteId) {
+      try {
+        await actualizarPerfilRemoto(profile.remoteId, {
+          name: updates.name,
+          categoryName: updates.categoryName,
+          price: updates.price,
+          regularPrice: updates.regularPrice,
+          description: updates.description,
+          testIds: updates.testIds,
+          testNames: updates.testNames,
+          tests: updates.tests,
+          status: updates.status,
+          basedOn: updates.basedOn,
+          notes: updates.notes
+        });
+      } catch (err) {
+        const mensaje = err instanceof PerfilesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar el perfil en el servidor:', err);
+        showNotification(`No se pudo sincronizar el perfil con el servidor (${mensaje}). Se actualizó solo localmente.`, 'warning');
+      }
+    }
     setCustomProfiles(prev =>
       prev.map(p => {
         if (p.id === id) {
@@ -2037,7 +2092,17 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showNotification('Perfil clínico actualizado', 'info');
   };
 
-  const deleteCustomProfile = (id: string) => {
+  const deleteCustomProfile = async (id: string): Promise<void> => {
+    const profile = customProfiles.find(p => p.id === id);
+    if (isEffectiveOnline && profile?.remoteId) {
+      try {
+        await eliminarPerfilRemoto(profile.remoteId);
+      } catch (err) {
+        const mensaje = err instanceof PerfilesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo eliminar el perfil en el servidor:', err);
+        showNotification(`No se pudo eliminar el perfil en el servidor (${mensaje}). Se eliminó solo localmente.`, 'warning');
+      }
+    }
     setCustomProfiles(prev => prev.filter(p => p.id !== id));
     showNotification('Perfil clínico eliminado', 'warning');
   };

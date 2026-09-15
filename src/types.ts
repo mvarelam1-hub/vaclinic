@@ -536,6 +536,11 @@ export interface LabCustomProfile {
   createdBy?: string;
   notes?: string;
   isFactoryProfile?: boolean;
+  // Id real de perfil_personalizado (migración 0011) cuando el perfil se
+  // pudo crear de verdad en el backend; misma convención que los demás
+  // remoteId de este archivo. Los perfiles de fábrica (DEFAULT_VACLINIC_PROFILES)
+  // nunca pasan por la API, así que nunca tienen este campo.
+  remoteId?: number;
 }
 
 // ==========================================
