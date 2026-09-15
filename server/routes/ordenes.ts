@@ -33,8 +33,20 @@ ordenesRouter.post('/', requirePermission('admision_crear_ordenes'), asyncHandle
       );
     }
 
+    // Genera el código único de consulta pública de esta orden (único
+    // mecanismo de acceso del paciente al resultado, ver la nota en
+    // pacientes.ts y fn_generar_codigo_consulta en la migración 0004).
+    // ANTES: esta función ya existía en la base de datos desde esa
+    // migración pero nunca se llamaba desde ningún lado — toda orden
+    // creada por esta ruta quedaba sin código, es decir, inaccesible desde
+    // el Portal del Paciente (POST /api/portal/login).
+    const { rows: codigoRows } = await client.query(
+      'SELECT fn_generar_codigo_consulta($1) AS codigo',
+      [idOrden]
+    );
+
     await client.query('COMMIT');
-    return res.status(201).json(ordenRows[0]);
+    return res.status(201).json({ ...ordenRows[0], codigo_consulta: codigoRows[0].codigo });
   } catch (err: any) {
     await client.query('ROLLBACK');
     return res.status(400).json({ error: err.message });

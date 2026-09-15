@@ -68,6 +68,8 @@ import {
   PacientesApiError,
   type CrearPacienteInput
 } from '../services/pacientesApiService';
+import { resolverCodigosAIdsExamen, ExamenesApiError } from '../services/examenesApiService';
+import { createOrdenRemote, OrdenesApiError } from '../services/ordenesApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -232,7 +234,7 @@ interface ClinicContextType {
   // Orders, Folders & Archive Management
   orders: LabOrder[];
   orderFolders: OrderFolder[];
-  addOrder: (order: Omit<LabOrder, 'id' | 'seqNumber'>) => LabOrder;
+  addOrder: (order: Omit<LabOrder, 'id' | 'seqNumber'>) => Promise<LabOrder>;
   updateOrder: (id: string, updates: Partial<LabOrder>) => void;
   deleteOrder: (id: string) => void;
   archiveOrder: (id: string) => void;
@@ -2153,9 +2155,57 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // ORDERS, FOLDERS & ARCHIVE IMPLEMENTATION
   // ==========================================
 
-  const addOrder = (orderData: Omit<LabOrder, 'id' | 'seqNumber'>): LabOrder => {
+  /**
+   * Registro de orden (Etapa "sistema real"). ANTES: puramente local,
+   * `id`/`orderNumber` inventados en el navegador, sin ningún vínculo con
+   * la base de datos real ya probada (server/routes/ordenes.ts). AHORA: si
+   * la orden trae `examCodes` (códigos del catálogo real, ej. "PAN-01" —
+   * ver NewOrderRegistration.tsx) y el paciente ya existe de verdad en
+   * Postgres (`esPacienteIdRemoto`), se resuelven esos códigos a los
+   * id_examen reales (migración 0010) y se crea la orden de verdad vía
+   * POST /api/ordenes -en una sola transacción que también genera el
+   * código único de consulta del paciente, fn_generar_codigo_consulta-.
+   * Si algo de eso falta o falla, se conserva el comportamiento local
+   * anterior (incluida la cola fuera de línea), avisando siempre con
+   * honestidad cuándo la orden NO quedó en la base de datos real.
+   */
+  const addOrder = async (orderData: Omit<LabOrder, 'id' | 'seqNumber'>): Promise<LabOrder> => {
     const maxSeq = orders.reduce((max, o) => Math.max(max, o.seqNumber || 0), 198);
     const newSeq = maxSeq + 1;
+
+    const idPacienteRemoto = orderData.patientId && esPacienteIdRemoto(orderData.patientId)
+      ? Number(orderData.patientId)
+      : null;
+
+    if (isEffectiveOnline && idPacienteRemoto && orderData.examCodes && orderData.examCodes.length > 0) {
+      try {
+        const { ids, noEncontrados } = await resolverCodigosAIdsExamen(orderData.examCodes);
+        if (noEncontrados.length > 0) {
+          throw new OrdenesApiError(
+            `Estos exámenes todavía no existen en el catálogo real del servidor: ${noEncontrados.join(', ')}.`
+          );
+        }
+        const resultado = await createOrdenRemote(idPacienteRemoto, ids);
+        const newOrder: LabOrder = {
+          ...orderData,
+          id: `ord-${resultado.id_orden}`,
+          seqNumber: newSeq,
+          orderNumber: resultado.numero_orden,
+          remoteId: resultado.id_orden,
+          codigoConsulta: resultado.codigo_consulta
+        };
+        setOrders(prev => [newOrder, ...prev]);
+        showNotification(`Orden ${newOrder.orderNumber} registrada en la base de datos real. Código de consulta: ${resultado.codigo_consulta}`);
+        createBackupSnapshot('save_order', `Nueva orden ${newOrder.orderNumber} (${newOrder.patientName})`);
+        return newOrder;
+      } catch (err) {
+        const mensaje = err instanceof OrdenesApiError || err instanceof ExamenesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear la orden en el servidor real:', err);
+        showNotification(`No se pudo registrar la orden en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+        // Continúa abajo con la ruta local.
+      }
+    }
+
     const newOrder: LabOrder = {
       ...orderData,
       id: `ord-${newSeq}`,

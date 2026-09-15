@@ -722,4 +722,12 @@ export interface LabOrder {
     confidenceScore?: number;
     deviceType?: string;
   };
+  // Integración con la API real (ver ClinicContext.tsx `addOrder` y
+  // src/services/ordenesApiService.ts). `examCodes` son los códigos del
+  // catálogo (ej. "PAN-01") que addOrder resuelve a id_examen reales antes
+  // de crear la orden en Postgres; `remoteId`/`codigoConsulta` quedan
+  // rellenos solo si esa creación remota tuvo éxito.
+  examCodes?: string[];
+  remoteId?: number;
+  codigoConsulta?: string;
 }

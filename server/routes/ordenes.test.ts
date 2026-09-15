@@ -51,6 +51,7 @@ function programClient(client: { query: ReturnType<typeof vi.fn> }) {
       return idExamen in EXAM_PRICES ? { rows: [{ precio: EXAM_PRICES[idExamen] }] } : { rows: [] };
     }
     if (sql.includes('INSERT INTO detalle_orden')) return { rows: [] };
+    if (sql.includes('fn_generar_codigo_consulta')) return { rows: [{ codigo: 'ABCD1234' }] };
     return { rows: [] };
   });
 }
@@ -90,9 +91,15 @@ describe('POST /api/ordenes (partición de equivalencia)', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.id_orden).toBe(100);
+    // La orden debe salir con su código único de consulta ya generado
+    // (fn_generar_codigo_consulta, migración 0004) — antes de este cambio
+    // esta función nunca se llamaba desde la ruta y la orden quedaba sin
+    // forma de que el paciente la consultara en el Portal.
+    expect(res.body.codigo_consulta).toBe('ABCD1234');
     const calledSql = lastClient!.query.mock.calls.map((c) => c[0]);
     expect(calledSql).toContain('COMMIT');
     expect(calledSql).not.toContain('ROLLBACK');
+    expect(calledSql.some((sql: string) => sql.includes('fn_generar_codigo_consulta'))).toBe(true);
   });
 
   it('rechaza con 400 cuando examenesIds está vacío (clase inválida)', async () => {

@@ -550,7 +550,7 @@ export const NewOrderRegistration: React.FC = () => {
 
     // Add Order to Orders Master
     const isCritical = priority === 'stat_panico' || priority === 'urgente';
-    addOrder({
+    const savedOrder = await addOrder({
       orderNumber: '',
       patientId: patientObj.id,
       patientName: patientObj.fullName,
@@ -565,6 +565,9 @@ export const NewOrderRegistration: React.FC = () => {
       month: orderMonth,
       testsCount: selectedTests.length,
       testsList: selectedTests.map(t => t.name),
+      // Códigos reales del catálogo (ej. "PAN-01"), usados por addOrder
+      // para crear la orden de verdad contra la API (ver ClinicContext.tsx).
+      examCodes: selectedTests.map(t => t.code),
       totalPrice: `Q${totalAmount.toFixed(2)}`,
       status: 'Pendiente',
       reportStatus: 'Sin Informe',
@@ -604,7 +607,12 @@ export const NewOrderRegistration: React.FC = () => {
       patientGender: patientObj.gender,
       preselectedCount: preselectedRanges.length || selectedTests.length,
       phone: patientObj.phone || phone,
-      accessCode: patientObj.accessCode || patientDni.substring(0, 6).toUpperCase(),
+      // Preferir el código único de consulta REAL de esta orden (generado
+      // por la API al crearla, fn_generar_codigo_consulta) sobre el PIN de
+      // paciente heredado -que la tesis documenta como ya no vigente-; ese
+      // PIN solo queda como último recurso si la orden no se pudo
+      // sincronizar con el servidor (ver ClinicContext.tsx `addOrder`).
+      accessCode: savedOrder.codigoConsulta || patientObj.accessCode || patientDni.substring(0, 6).toUpperCase(),
       priority,
       origin,
       fastingCondition,
