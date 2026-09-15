@@ -39,6 +39,45 @@ beforeEach(() => {
   currentStaffUser = { idUsuario: 1, roleId: 'recepcionista', status: 'activo', nombreCompleto: 'Recepcionista Demo' };
 });
 
+describe('POST /api/pacientes (creación)', () => {
+  it('rechaza con 400 si faltan campos obligatorios', async () => {
+    const app = await buildApp();
+    const res = await request(app).post('/api/pacientes').send({ nombreCompleto: 'Ana' });
+    expect(res.status).toBe(400);
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it('crea el paciente con todos los campos, incluidos correo y dirección', async () => {
+    queryMock.mockResolvedValueOnce({
+      rows: [{ id_paciente: 9, nombre_completo: 'Ana López', correo: 'ana@correo.com', direccion: 'Zona 10' }],
+    });
+    const app = await buildApp();
+    const res = await request(app).post('/api/pacientes').send({
+      nombreCompleto: 'Ana López',
+      fechaNacimiento: '1990-01-01',
+      telefonoWhatsApp: '50212345678',
+      correo: 'ana@correo.com',
+      direccion: 'Zona 10',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.id_paciente).toBe(9);
+    // Se insertan correo y dirección (columnas ya existían en el esquema
+    // desde la migración 0001 pero el INSERT las omitía).
+    expect(queryMock.mock.calls[0][0]).toMatch(/correo, direccion/);
+    expect(queryMock.mock.calls[0][1]).toContain('ana@correo.com');
+    expect(queryMock.mock.calls[0][1]).toContain('Zona 10');
+  });
+
+  it('rechaza con 403 a un rol sin admision_pacientes', async () => {
+    currentStaffUser.roleId = 'administrador_ti';
+    const app = await buildApp();
+    const res = await request(app).post('/api/pacientes').send({
+      nombreCompleto: 'Ana', fechaNacimiento: '1990-01-01', telefonoWhatsApp: '1',
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('GET /api/pacientes (listado y búsqueda)', () => {
   it('lista pacientes recientes cuando no se envía ?buscar', async () => {
     queryMock.mockResolvedValueOnce({ rows: [{ id_paciente: 1, nombre_completo: 'María López' }] });

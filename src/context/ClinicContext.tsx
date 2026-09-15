@@ -60,6 +60,14 @@ import { BackupService } from '../services/backupService';
 import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
 import { getFirebaseAuth } from '../services/firebaseConfig';
 import { verifyStaffSession } from '../services/staffAuthService';
+import {
+  createPacienteRemote,
+  updatePacienteRemote,
+  mapPacienteApiToPatient,
+  esPacienteIdRemoto,
+  PacientesApiError,
+  type CrearPacienteInput
+} from '../services/pacientesApiService';
 
 export type StaffTabType = 
   | 'nueva_orden'
@@ -110,8 +118,8 @@ interface ClinicContextType {
   selectedPatientId: string | null;
   setSelectedPatientId: (id: string | null) => void;
   currentPatient: Patient | null;
-  addPatient: (patient: Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>) => Patient;
-  updatePatient: (id: string, updates: Partial<Patient>) => void;
+  addPatient: (patient: Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>) => Promise<Patient>;
+  updatePatient: (id: string, updates: Partial<Patient>) => Promise<void>;
   deletePatient: (id: string) => void;
   addEpisode: (episodeData: Omit<LabEpisode, 'id' | 'episodeNumber'>) => LabEpisode;
   updateEpisode: (id: string, updates: Partial<LabEpisode>) => void;
@@ -1287,10 +1295,58 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const addPatient = (patientData: Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>): Patient => {
+  // Traduce el `Patient` del frontend al body que espera POST/PATCH
+  // /api/pacientes (ver src/services/pacientesApiService.ts).
+  const patientDataToApiInput = (
+    patientData: Partial<Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>>
+  ): Partial<CrearPacienteInput> => ({
+    nombreCompleto: patientData.fullName,
+    dni: patientData.nationalId || undefined,
+    fechaNacimiento: patientData.birthDate,
+    genero: patientData.gender,
+    telefonoWhatsApp: patientData.phone,
+    correo: patientData.email || undefined,
+    direccion: patientData.address || undefined
+  });
+
+  /**
+   * Registro de paciente (Etapa "sistema real"). ANTES: solo escribía a
+   * localStorage con un id generado en el navegador (`pat-${Date.now()}`),
+   * así que dos personas del staff en dos sesiones nunca veían al mismo
+   * paciente y nada llegaba a la base de datos real ya probada
+   * (server/routes/pacientes.ts). AHORA: si hay conexión, se crea primero
+   * en Postgres vía POST /api/pacientes y el `id` que usa el resto de la
+   * app (para vincular órdenes, reportes, etc.) es el id real de la base
+   * de datos -no uno inventado que luego habría que reconciliar-. Si la
+   * app está en modo fuera de línea (o el POST falla por una razón real,
+   * ej. el backend no responde), se conserva el comportamiento anterior
+   * -guardar localmente y encolar la acción- para no bloquear la admisión
+   * de pacientes, pero se lo notifica de forma honesta: nunca se dice
+   * "sincronizado" cuando no lo está.
+   */
+  const addPatient = async (
+    patientData: Omit<Patient, 'id' | 'createdAt' | 'accessCode' | 'pinCode'>
+  ): Promise<Patient> => {
     const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
     const nextSeq = patients.length + 1;
     const generatedCode = patientData.patientCode || `VAC-${String(nextSeq).padStart(6, '0')}`;
+
+    if (isEffectiveOnline) {
+      try {
+        const fila = await createPacienteRemote(patientDataToApiInput(patientData) as CrearPacienteInput);
+        const newPatient: Patient = mapPacienteApiToPatient(fila, { ...patientData, patientCode: generatedCode });
+        setPatients((prev) => [newPatient, ...prev]);
+        showNotification(`Paciente ${newPatient.fullName} registrado en la base de datos real. Código: ${newPatient.patientCode}`);
+        createBackupSnapshot('save_patient', `Nuevo paciente: ${newPatient.fullName} (${newPatient.patientCode})`);
+        return newPatient;
+      } catch (err) {
+        const mensaje = err instanceof PacientesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo crear el paciente en el servidor real:', err);
+        showNotification(`No se pudo guardar el paciente en el servidor (${mensaje}). Se guardó solo localmente.`, 'warning');
+        // Continúa abajo con la ruta local, igual que en modo sin conexión.
+      }
+    }
+
     const newPatient: Patient = {
       ...patientData,
       patientCode: generatedCode,
@@ -1301,28 +1357,40 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
     setPatients((prev) => [newPatient, ...prev]);
 
-    if (!isEffectiveOnline) {
-      queuePendingAction({
-        actionType: 'create_patient',
-        entityType: 'Paciente',
-        entityId: newPatient.id,
-        description: `Registro de paciente ${newPatient.fullName} (${newPatient.nationalId || newPatient.patientCode})`,
-        payload: newPatient
-      });
-      showNotification(`Paciente ${newPatient.fullName} registrado (Guardado en cola fuera de línea)`, 'warning');
-    } else {
-      showNotification(`Paciente ${newPatient.fullName} registrado. Código: ${newPatient.patientCode || newPatient.accessCode}`);
-    }
-
+    queuePendingAction({
+      actionType: 'create_patient',
+      entityType: 'Paciente',
+      entityId: newPatient.id,
+      description: `Registro de paciente ${newPatient.fullName} (${newPatient.nationalId || newPatient.patientCode})`,
+      payload: newPatient
+    });
+    showNotification(`Paciente ${newPatient.fullName} registrado (Guardado en cola fuera de línea)`, 'warning');
     createBackupSnapshot('save_patient', `Nuevo paciente: ${newPatient.fullName} (${newPatient.patientCode || newPatient.accessCode})`);
 
     return newPatient;
   };
 
-  const updatePatient = (id: string, updates: Partial<Patient>) => {
+  const updatePatient = async (id: string, updates: Partial<Patient>): Promise<void> => {
     setPatients((prev) =>
       prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
     );
+
+    // Solo tiene sentido sincronizar contra la API si este paciente
+    // realmente existe en Postgres (id numérico real, ver
+    // esPacienteIdRemoto) — un paciente de demo/localStorage anterior
+    // (id "pat-...") nunca existió ahí y un PATCH fallaría sin remedio.
+    if (isEffectiveOnline && esPacienteIdRemoto(id)) {
+      try {
+        await updatePacienteRemote(id, patientDataToApiInput(updates));
+        showNotification('Datos del paciente actualizados con éxito en el servidor real.');
+        return;
+      } catch (err) {
+        const mensaje = err instanceof PacientesApiError ? err.message : 'Error de red desconocido.';
+        console.error('[ClinicContext] No se pudo actualizar el paciente en el servidor real:', err);
+        showNotification(`No se pudo sincronizar la actualización con el servidor (${mensaje}). Cambios guardados solo localmente.`, 'warning');
+        return;
+      }
+    }
 
     if (!isEffectiveOnline) {
       queuePendingAction({
@@ -1334,7 +1402,10 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
       showNotification('Datos del paciente actualizados (Guardado en cola fuera de línea)', 'warning');
     } else {
-      showNotification('Datos del paciente actualizados con éxito en 4D LAB');
+      // Paciente local (de demo, pre-migración) sin contraparte real en la
+      // base de datos: se documenta así en vez de fingir una sincronización
+      // que nunca ocurrió.
+      showNotification('Datos del paciente actualizados localmente (este registro es de demostración y no existe en la base de datos real)', 'info');
     }
   };
 

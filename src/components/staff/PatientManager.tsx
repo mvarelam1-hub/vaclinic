@@ -285,7 +285,7 @@ export const PatientManager: React.FC = () => {
     setAge(calculateAge(val));
   };
 
-  const handleCreatePatient = (e: React.FormEvent) => {
+  const handleCreatePatient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fullName.trim()) {
       showNotification('Ingresa el nombre del paciente', 'warning');
@@ -300,7 +300,13 @@ export const PatientManager: React.FC = () => {
       .map((a) => a.trim())
       .filter((a) => a.length > 0);
 
-    const newPat = addPatient({
+    // `addPatient` ahora es asíncrono: intenta crear el paciente de verdad
+    // en el backend (POST /api/pacientes) antes de devolver el objeto, así
+    // que el `id` que se usa de aquí en adelante (para el modal de
+    // WhatsApp, etc.) es el id real de la base de datos, no uno inventado
+    // en el navegador. Ver el comentario junto a `addPatient` en
+    // ClinicContext.tsx para el detalle del fallback sin conexión.
+    const newPat = await addPatient({
       fullName: fullName.toUpperCase(),
       patientCode: autoCode,
       nationalId: nationalId || '',

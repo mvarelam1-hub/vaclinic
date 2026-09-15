@@ -461,17 +461,21 @@ export const NewOrderRegistration: React.FC = () => {
   };
 
   // Official execution after staff reviews and confirms what is going to be paid
-  const handleConfirmAndSaveOrder = () => {
+  const handleConfirmAndSaveOrder = async () => {
     const patientDni = nationalId.trim() || `${Math.floor(10000000 + Math.random() * 90000000)}`;
 
     // Check if patient exists or create new
-    let patientObj = patients.find(p => 
+    let patientObj = patients.find(p =>
       (nationalId.trim() && p.nationalId.toLowerCase() === nationalId.trim().toLowerCase()) ||
       p.fullName.toLowerCase() === patientName.trim().toLowerCase()
     );
 
     if (!patientObj) {
-      patientObj = addPatient({
+      // `addPatient` intenta crear el paciente de verdad en el backend
+      // (POST /api/pacientes) antes de resolver; se espera aquí para que
+      // `patientObj.id` -usado más abajo para la orden, el episodio 4D y
+      // los manifiestos- sea el id real de la base de datos.
+      patientObj = await addPatient({
         fullName: patientName.trim(),
         nationalId: patientDni,
         gender: gender === 'Femenino' ? 'F' : gender === 'Masculino' ? 'M' : 'Otro',

@@ -14,7 +14,8 @@ pacientesRouter.use(requireStaffAuth);
 // describe el caso de uso "consultar resultado mediante código único" del
 // documento de origen — no hay un segundo factor de PIN en ese diseño.
 pacientesRouter.post('/', requirePermission('admision_pacientes'), asyncHandler(async (req, res) => {
-  const { nombreCompleto, dni, fechaNacimiento, genero, telefonoWhatsApp, esMenorEdad, nombreEncargadoLegal, telefonoEncargadoLegal } = req.body || {};
+  const { nombreCompleto, dni, fechaNacimiento, genero, telefonoWhatsApp, correo, direccion,
+    esMenorEdad, nombreEncargadoLegal, telefonoEncargadoLegal } = req.body || {};
 
   if (!nombreCompleto || !fechaNacimiento || !telefonoWhatsApp) {
     return res.status(400).json({ error: 'nombreCompleto, fechaNacimiento y telefonoWhatsApp son obligatorios.' });
@@ -23,11 +24,11 @@ pacientesRouter.post('/', requirePermission('admision_pacientes'), asyncHandler(
   try {
     const { rows } = await pool.query(
       `INSERT INTO paciente (nombre_completo, dni, fecha_nacimiento, genero, telefono_whatsapp,
-                              es_menor_edad, nombre_encargado_legal, telefono_encargado_legal)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       RETURNING id_paciente, nombre_completo`,
+                              correo, direccion, es_menor_edad, nombre_encargado_legal, telefono_encargado_legal)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
       [nombreCompleto, dni || null, fechaNacimiento, genero || null, telefonoWhatsApp,
-        !!esMenorEdad, nombreEncargadoLegal || null, telefonoEncargadoLegal || null]
+        correo || null, direccion || null, !!esMenorEdad, nombreEncargadoLegal || null, telefonoEncargadoLegal || null]
     );
     return res.status(201).json(rows[0]);
   } catch (err: any) {
@@ -43,7 +44,7 @@ pacientesRouter.get('/', requirePermission('admision_pacientes'), asyncHandler(a
   const limite = Math.min(Number(req.query.limite) || 50, 200);
   if (buscar) {
     const { rows } = await pool.query(
-      `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp
+      `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp, correo, direccion
        FROM paciente
        WHERE nombre_completo ILIKE $1 OR dni ILIKE $1
        ORDER BY nombre_completo
@@ -53,7 +54,7 @@ pacientesRouter.get('/', requirePermission('admision_pacientes'), asyncHandler(a
     return res.json(rows);
   }
   const { rows } = await pool.query(
-    `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp
+    `SELECT id_paciente, nombre_completo, dni, fecha_nacimiento, telefono_whatsapp, correo, direccion
      FROM paciente ORDER BY id_paciente DESC LIMIT $1`,
     [limite]
   );
@@ -79,6 +80,8 @@ const CAMPOS_PACIENTE_PATCH: Record<string, string> = {
   fecha_nacimiento: 'fechaNacimiento',
   genero: 'genero',
   telefono_whatsapp: 'telefonoWhatsApp',
+  correo: 'correo',
+  direccion: 'direccion',
   es_menor_edad: 'esMenorEdad',
   nombre_encargado_legal: 'nombreEncargadoLegal',
   telefono_encargado_legal: 'telefonoEncargadoLegal',
